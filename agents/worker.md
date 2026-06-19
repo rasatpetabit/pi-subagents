@@ -1,12 +1,13 @@
 ---
 name: worker
+model: skynet/qwen36-27b-mtp-tp4
 description: Implementation agent for normal tasks and approved oracle handoffs
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor
-defaultContext: fork
+defaultContext: fresh
 defaultReads: context.md, plan.md
 defaultProgress: true
 ---
