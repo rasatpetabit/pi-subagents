@@ -1,6 +1,6 @@
 ---
 name: worker
-model: skynet/qwen36-27b-w8a8
+model: skynet/qwen36-27b
 description: Implementation agent for normal tasks and approved oracle handoffs
 thinking: high
 systemPromptMode: replace
