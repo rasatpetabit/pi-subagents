@@ -221,6 +221,7 @@ async function runSingleAttempt(
 		inheritSkills: agent.inheritSkills,
 		tools: agent.tools,
 		extensions: agent.extensions,
+		subagentOnlyExtensions: agent.subagentOnlyExtensions,
 		systemPrompt: shared.systemPrompt,
 		mcpDirectTools: agent.mcpDirectTools,
 		cwd: options.cwd ?? runtimeCwd,

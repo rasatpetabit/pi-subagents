@@ -100,6 +100,17 @@ function isRequiredOnlySchema(value: unknown): boolean {
 	return keys.length === 1 && keys[0] === "required";
 }
 
+function getPropertySchema(schema: JsonSchemaNode | undefined, path: string[]): JsonSchemaNode | undefined {
+	let current: unknown = schema;
+	for (const key of path) {
+		if (!current || typeof current !== "object") return undefined;
+		current = (current as JsonSchemaNode).properties;
+		if (!current || typeof current !== "object") return undefined;
+		current = (current as Record<string, unknown>)[key];
+	}
+	return current && typeof current === "object" ? current as JsonSchemaNode : undefined;
+}
+
 let schemas: Record<string, JsonSchemaNode> = {};
 let SubagentParams: SubagentParamsSchema | undefined;
 let schemasAvailable = true;
@@ -136,7 +147,6 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		const taskCountSchema = taskSchema?.count;
 		assert.ok(taskCountSchema, "tasks[].count schema should exist");
 		assert.equal(taskCountSchema.minimum, 1);
-		assert.match(String(taskCountSchema.description ?? ""), /repeat/i);
 		const outputSchema = taskSchema?.output as JsonSchemaNode | undefined;
 		assert.equal(outputSchema?.type, undefined);
 		assert.equal(hasAnyOfType(outputSchema, "string"), true);
@@ -170,7 +180,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		const actionSchema = SubagentParams?.properties?.action;
 		assert.ok(actionSchema, "action schema should exist");
 		assert.equal(actionSchema.type, "string");
-		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "resume", "doctor"]);
+		assert.deepEqual(actionSchema.enum, ["list", "get", "create", "update", "delete", "status", "interrupt", "resume", "append-step", "doctor"]);
 		const description = String(actionSchema.description ?? "");
 		assert.match(description, /Management\/control action/);
 		assert.match(description, /Omit for execution mode/);
@@ -183,11 +193,13 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(idSchema.type, "string");
 		assert.match(String(idSchema.description ?? ""), /status/i);
 		assert.match(String(idSchema.description ?? ""), /interrupt/i);
+		assert.match(String(idSchema.description ?? ""), /append-step/i);
 
 		const runIdSchema = SubagentParams?.properties?.runId;
 		assert.ok(runIdSchema, "runId schema should exist");
 		assert.equal(runIdSchema.type, "string");
 		assert.match(String(runIdSchema.description ?? ""), /interrupt/i);
+		assert.match(String(runIdSchema.description ?? ""), /append-step/i);
 
 		const dirSchema = SubagentParams?.properties?.dir;
 		assert.ok(dirSchema, "dir schema should exist");
@@ -280,6 +292,55 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		}
 
 		assert.deepEqual(rejectedPaths, []);
+	});
+
+	it("keeps only top-level parameter descriptions to keep the provider payload compact", () => {
+		assert.ok(SubagentParams, "SubagentParams schema should exist");
+		const schema = SubagentParams as unknown as JsonSchemaNode;
+		const serialized = JSON.stringify(schema);
+		assert.ok(serialized.length < 17_500, `expected compact schema under 17.5k chars, got ${serialized.length}`);
+		assert.equal(serialized.includes('"$ref"'), false);
+		assert.equal(serialized.includes('"$defs"'), false);
+		assert.equal(serialized.split("Optional acceptance contract.").length - 1, 1);
+		assert.match(String((schema.properties as Record<string, JsonSchemaNode> | undefined)?.agent?.description ?? ""), /SINGLE mode/);
+		assert.match(String((schema.properties as Record<string, JsonSchemaNode> | undefined)?.acceptance?.description ?? ""), /acceptance contract/);
+
+		const nestedDescriptionPaths: string[] = [];
+		const stack: Array<{ path: string; value: unknown }> = [{ path: "SubagentParams", value: schema }];
+		while (stack.length > 0) {
+			const current = stack.pop()!;
+			if (!current.value || typeof current.value !== "object") continue;
+			const node = current.value as JsonSchemaNode;
+			const pathParts = current.path.split(".");
+			const isTopLevelParameter = pathParts.length === 3 && pathParts[0] === "SubagentParams" && pathParts[1] === "properties";
+			if (typeof node.description === "string" && !isTopLevelParameter) nestedDescriptionPaths.push(`${current.path}.description`);
+			if (Array.isArray(current.value)) {
+				current.value.forEach((value, index) => stack.push({ path: `${current.path}[${index}]`, value }));
+			} else {
+				for (const [key, value] of Object.entries(node)) stack.push({ path: `${current.path}.${key}`, value });
+			}
+		}
+		assert.deepEqual(nestedDescriptionPaths, []);
+	});
+
+	it("preserves TypeBox metadata while pruning provider-visible descriptions", () => {
+		assert.ok(SubagentParams, "SubagentParams schema should exist");
+		const schema = SubagentParams as unknown as JsonSchemaNode;
+		const rootKind = Object.getOwnPropertyDescriptor(schema, "~kind");
+		assert.equal(rootKind?.value, "Object");
+		assert.equal(rootKind?.enumerable, false);
+
+		const agentSchema = getPropertySchema(schema, ["agent"]);
+		assert.equal(Object.getOwnPropertyDescriptor(agentSchema, "~kind")?.enumerable, false);
+		assert.equal(Object.getOwnPropertyDescriptor(agentSchema, "~optional")?.value, true);
+		assert.equal(Object.getOwnPropertyDescriptor(agentSchema, "~optional")?.enumerable, false);
+
+		const tasksSchema = getPropertySchema(schema, ["tasks"]);
+		const taskItemsSchema = tasksSchema?.items as JsonSchemaNode | undefined;
+		const taskCountSchema = getPropertySchema(taskItemsSchema, ["count"]);
+		assert.equal(Object.getOwnPropertyDescriptor(taskCountSchema, "~kind")?.enumerable, false);
+		assert.equal(Object.getOwnPropertyDescriptor(taskCountSchema, "~optional")?.value, true);
+		assert.equal(Object.getOwnPropertyDescriptor(taskCountSchema, "~optional")?.enumerable, false);
 	});
 
 	it("does not emit provider-rejected union schema shapes", () => {
@@ -425,6 +486,10 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: false },
 			{ agent: "worker", task: "Fix", acceptance: { level: "checked" } },
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: true } },
+			{ tasks: [{ agent: "worker", task: "Fix", acceptance: true }] },
+			{ chain: [{ agent: "worker", acceptance: { level: "checked", review: true } }] },
+			{ chain: [{ parallel: [{ agent: "worker", acceptance: { level: "checked", review: true } }] }] },
+			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "worker", acceptance: true }, collect: { as: "reviews" } }] },
 			{ config: [] },
 			{ config: null },
 		];

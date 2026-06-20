@@ -38,15 +38,18 @@ describe("builtin agent overrides", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("bundled builtin agents inherit the default model", () => {
+	it("bundled builtin agents inherit the default model except the skynet worker override", () => {
 		const builtins = discoverAgentsAll(tempProject).builtin;
 		assert.ok(builtins.length > 0);
 		assert.deepEqual(
 			builtins
 				.filter((agent) => agent.model !== undefined || agent.fallbackModels !== undefined)
 				.map((agent) => agent.name),
-			[],
+			["worker"],
 		);
+		const worker = builtins.find((agent) => agent.name === "worker");
+		assert.equal(worker?.model, "skynet/qwen36-27b");
+		assert.equal(worker?.fallbackModels, undefined);
 	});
 
 	it("applies user settings overrides to builtin agents", () => {
@@ -59,6 +62,7 @@ describe("builtin agent overrides", () => {
 						systemPromptMode: "replace",
 						inheritProjectContext: true,
 						inheritSkills: true,
+						subagentOnlyExtensions: ["./tools/child-review.ts"],
 						completionGuard: false,
 					},
 				},
@@ -73,6 +77,7 @@ describe("builtin agent overrides", () => {
 		assert.equal(reviewer.systemPromptMode, "replace");
 		assert.equal(reviewer.inheritProjectContext, true);
 		assert.equal(reviewer.inheritSkills, true);
+		assert.deepEqual(reviewer.subagentOnlyExtensions, ["./tools/child-review.ts"]);
 		assert.equal(reviewer.completionGuard, false);
 		assert.equal(reviewer.override?.scope, "user");
 		assert.equal(reviewer.override?.path, path.join(tempHome, ".pi", "agent", "settings.json"));
@@ -238,6 +243,7 @@ describe("builtin agent overrides", () => {
 				skills: ["safe-bash"],
 				tools: ["bash"],
 				mcpDirectTools: ["xcodebuild_list_sims"],
+				subagentOnlyExtensions: ["./tools/base-child.ts"],
 				completionGuard: false,
 			},
 			{
@@ -252,6 +258,7 @@ describe("builtin agent overrides", () => {
 				skills: undefined,
 				tools: undefined,
 				mcpDirectTools: undefined,
+				subagentOnlyExtensions: undefined,
 				completionGuard: true,
 			},
 		);
@@ -265,6 +272,7 @@ describe("builtin agent overrides", () => {
 			defaultContext: false,
 			skills: false,
 			tools: false,
+			subagentOnlyExtensions: false,
 			completionGuard: true,
 		});
 	});

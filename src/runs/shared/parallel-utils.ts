@@ -4,6 +4,12 @@ import type { JsonSchemaObject, ResolvedAcceptanceConfig } from "../../shared/ty
 export interface RunnerSubagentStep {
 	agent: string;
 	task: string;
+	importAsyncRoot?: {
+		runId: string;
+		asyncDir: string;
+		resultPath: string;
+		index: number;
+	};
 	phase?: string;
 	label?: string;
 	outputName?: string;
@@ -14,6 +20,7 @@ export interface RunnerSubagentStep {
 	modelCandidates?: string[];
 	tools?: string[];
 	extensions?: string[];
+	subagentOnlyExtensions?: string[];
 	mcpDirectTools?: string[];
 	completionGuard?: boolean;
 	systemPrompt?: string | null;
