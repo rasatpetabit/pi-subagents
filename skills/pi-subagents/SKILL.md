@@ -879,3 +879,9 @@ subagent({ action: "doctor" })
 ```typescript
 // Inspect `subagent({ action: "status", id: "..." })`, artifact metadata/output logs, and run doctor. Extension loader errors usually appear in child output logs.
 ```
+
+---
+
+## Host policy pointer
+
+On this host, model routing, reviewer/advisor selection, and subagent-dispatch tiers are owned by **agent-dispatch** (`agent-dispatch where` for the repo root, `agent-dispatch digest` for live routing policy); any model names shown above are illustrative, not a routing policy — do not duplicate or override dispatch policy here. User-facing questions and decision gates go through `AskUserQuestion` / `ask_user_question` (AUQ); never end a turn with a prose question.
