@@ -79,7 +79,7 @@ mechanism. Conclusion: do not adopt the package; do not thread an
 
 The new test locks the invariant so a future refactor that stops passing a
 prompt path (which would let Pi re-discover and inherit APPEND_SYSTEM.md) fails
-loudly. Full unit suite green (566/566), biome clean.
+loudly. Full unit suite green (566/566), lint: n/a (no repo biome config — see 2026-06-25 validation entry).
 
 ## 2026-06-24 — LIVE end-to-end validation (real guard) found + fixed 2 more bugs
 
@@ -109,7 +109,7 @@ Live e2e now: forbidden haiku → `GovernanceDenied` code `GOVERNANCE_DENIED` ve
 timer/fd) and IS released on failed runs (workflow-manager.ts:570) — no leak; the
 test runner's lingering handle is the MCP harness, so `test:integration` now passes
 `--test-force-exit` (forces exit only AFTER tests settle; the 390 existing tests are
-unaffected). Suites: unit 582/582, integration 391/391 (0 skipped), biome clean.
+unaffected). Suites: unit 582/582, integration 391/391 (0 skipped), lint: n/a (no repo biome config — see 2026-06-25 validation entry).
 
 ## 2026-06-24 — adversarial-review dev cycle + governance seam hardening (3 findings → fixed)
 
@@ -145,7 +145,7 @@ exercised `governModelSpec` in isolation, never the `agent.ts` spawn path):
 - `GovernanceDenied extends WorkflowError` with non-recoverable `GOVERNANCE_DENIED`
   code → `wrapError` passes it through → `workflow.ts` throws (hard abort) (P3 closed).
 - +6 unit tests (effective-spec precedence, P1/P2 deny, served pass-through, P3
-  terminality). Suites: unit 581/581, integration 390/390, biome clean.
+  terminality). Suites: unit 581/581, integration 390/390, lint: n/a (no repo biome config — see 2026-06-25 validation entry).
 
 **Round-2 re-review:** P2 + P3 confirmed structurally closed. P1 narrowed to a
 RESIDUAL edge (Codex verdict, low effort): real forbidden-spawn risk ONLY when
@@ -161,7 +161,7 @@ So a no-usable-default untagged spawn is refused rather than risking the SDK's
 unverifiable fallback. Probed this env: provider=`litellm`, model=`glm-5.2` (both set)
 → concrete spec → never hits fail-closed. Rejected the alternative (hardcoding the
 SDK-internal `defaultModelPerProvider`) as fragile — it is not exported via the package
-`exports` map. Suites after fix: unit 582/582, integration 390/390, biome clean.
+`exports` map. Suites after fix: unit 582/582, integration 390/390, lint: n/a (no repo biome config — see 2026-06-25 validation entry).
 
 **Also outstanding (sync clobber):** the `agent-dispatch record` verb added earlier
 this session was LOST when the agent-dispatch tree was reset from `main` to branch
@@ -169,3 +169,47 @@ this session was LOST when the agent-dispatch tree was reset from `main` to bran
 writer). `agent-dispatch guard` still works; `record` returns "Unknown subcommand",
 so `recordOutcome` is a silent no-op (best-effort, non-breaking). Needs recreating on
 the now-current branch before the ledger hook works / before merge.
+
+## 2026-06-25 — thorough end-to-end validation (all green; one cross-vendor HIGH adjudicated unreachable)
+
+Scope: full re-validation of the governance seam against the REAL binaries + a
+cross-vendor adversarial review of the final committed diff. No behavior change —
+only a load-bearing-invariant comment at `agent.ts` (before `createAgentSession`) and
+this entry + the WORKLOG lint correction below.
+
+Empirically verified (not trusting prior summaries):
+- Suites: fork unit **582/582**, integration **391/391 (0 skipped — the LIVE e2e test
+  actually spawned the real `agent-dispatch guard`, 3.8s)**, agent-dispatch `record` **4/4**.
+- Real guard contract, probed with the BARE disposition keys the engine actually
+  sends (`consultGuard(dispositionKey)`, not the full spec): `haiku`→deny (exit 2,
+  "forbidden; no override path"), `sonnet`→deny (exit 2, "requires live override
+  grant"), `opus`→allow (exit 0), `fable`→allow (exit 0). Deny prints verdict JSON on
+  stdout AND exits 2; consultGuard's err.stdout catch-path parses it. **No false-deny
+  of opus/fable** — the earlier worry that the guard might reject bare keys is closed.
+- Real `record` verb accepts the engine's exact payload (`backend:"workflow-engine"`),
+  writes a canonical ledger row (`latency_s` from `duration_ms`, synthesized
+  `dispatch_id`), and rejects missing `task_class`/`outcome` (exit 1). The sync-clobber
+  item above is RESOLVED — verb recreated, committed `4a33890` on agent-dispatch main.
+
+Cross-vendor review (codex→gpt-5.5) raised ONE HIGH: the gate models the SDK's model
+precedence as `resolved ?? sessionOption ?? settingsDefault` but the SDK
+(`sdk.js:108-130`) has a middle tier — restore `existingSession.model` from a
+persisted transcript. **Adjudicated REAL-but-UNREACHABLE** against SDK source:
+`SessionManager.create()` passes `sessionFile=undefined` → constructor `newSession()`
+(`session-manager.js:499-512,542-566`) → brand-new empty session, never scans the dir
+→ `hasExistingSession` always false → tier-2 restore never fires, **even on resume**
+(per-run `transcriptDir` is populated but `.create` still opens a NEW file). Second,
+independent reason: the gate runs before every spawn, so a post-gate transcript can
+never hold a forbidden model. Fix applied = a load-bearing comment locking the
+invariant (if anyone later adds `SessionManager.open()`/`continueRecent()` resume,
+the gate MUST add `existingSession.model` to the precedence). Reviewer's "pin the
+governed Model into createAgentSession" fix was REJECTED — on the no-per-call-model
+path we intentionally let the SDK apply the (already-governed) settings default;
+pinning would add behavior risk to a dead path. No regression test added (the
+invariant is structural + commented; a test would be gold-plating).
+
+WORKLOG correction (faithful reporting): prior entries' "biome clean" claims are
+**unverifiable** — there is no `biome.json` anywhere in the repo and biome is not a
+declared dependency; running default-config biome flags untouched UPSTREAM files too
+(e.g. `src/agents/agents.ts`). The governance files sit in the same stylistic
+ballpark as upstream. Those four "biome clean" lines were rewritten to "lint: n/a".

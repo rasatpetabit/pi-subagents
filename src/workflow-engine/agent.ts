@@ -511,6 +511,23 @@ export class WorkflowAgent {
     });
     const governed = governModelSpec({ effectiveSpec, tier: options.tier });
 
+    // INVARIANT (load-bearing for the gate's completeness — verified against the
+    // SDK source 2026-06-25). createAgentSession resolves the spawn model in THREE
+    // tiers (sdk.js:108-130): (1) options.model, else (2) existingSession.model
+    // restored from a persisted transcript, else (3) findInitialModel(settings
+    // default). The gate above covers tier 1 (resolvedModel) and tier 3
+    // (sessionDefault) but deliberately NOT tier 2 — and that omission is SAFE only
+    // because we ALWAYS hand createAgentSession a freshly-created session:
+    // SessionManager.create() passes sessionFile=undefined → the constructor calls
+    // newSession() (session-manager.js:499-512,542-566), which starts a brand-new
+    // empty file (header only, zero messages) and never scans sessionDir. So
+    // existingSession.messages.length is always 0 → hasExistingSession is false →
+    // the tier-2 restore branch is never entered — even on RESUME, where the per-run
+    // transcriptDir is already populated (.create still starts a NEW file). If a
+    // future refactor ever switches to SessionManager.open()/continueRecent() (true
+    // session resume), tier 2 goes live and this gate MUST add existingSession.model
+    // to the effective-spec precedence, or a persisted forbidden model could spawn
+    // ungated. (Cross-vendor review flagged this as a HIGH; adjudicated unreachable.)
     const { session } = await createAgentSession({
       cwd: runCwd,
       agentDir,
