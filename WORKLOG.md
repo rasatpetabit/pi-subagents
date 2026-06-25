@@ -213,3 +213,6 @@ WORKLOG correction (faithful reporting): prior entries' "biome clean" claims are
 declared dependency; running default-config biome flags untouched UPSTREAM files too
 (e.g. `src/agents/agents.ts`). The governance files sit in the same stylistic
 ballpark as upstream. Those four "biome clean" lines were rewritten to "lint: n/a".
+
+## 2026-06-25 — compacted `pi-subagents` skill hot path
+Scope: rewrote `skills/pi-subagents/SKILL.md` as a 169-line orchestration router and moved detailed recipes into one-hop `references/` files. Why: reduce automatic skill-load context cost without losing workflow functionality. Decision: keep parent-only invariants, async-first/single-writer rules, core tool shapes, and host policy pointer in hot path; move long workflow, operations, and agent-authoring detail behind progressive disclosure. Validation: skill validator clean, reference/prompt paths resolved, `git diff --check` clean, unit suite **582/582**.
