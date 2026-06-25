@@ -28,6 +28,7 @@ import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foregro
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
+import { registerWorkflowTool } from "../workflow-engine/register.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
@@ -466,6 +467,19 @@ DIAGNOSTICS:
 
 	pi.registerTool(tool);
 	registerSlashCommands(pi, state);
+
+	// Vendored, agent-dispatch-governed deterministic workflow engine (sibling to
+	// `subagent`). Guarded so an engine init failure can never break the subagent
+	// tool. Opt out with PI_SUBAGENT_DISABLE_WORKFLOW=1.
+	try {
+		registerWorkflowTool(pi);
+	} catch (error) {
+		console.warn(
+			`[pi-subagents] workflow engine registration skipped: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
 
 	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
 	const controlNoticeSeenStoreKey = "__piSubagentVisibleControlNotices";

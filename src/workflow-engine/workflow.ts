@@ -1,0 +1,1462 @@
+import { createHash } from "node:crypto";
+import vm from "node:vm";
+import type { Node } from "acorn";
+import { parse } from "acorn";
+import type { TSchema } from "typebox";
+import type { AgentUsage } from "./agent.ts";
+import { WorkflowAgent, type WorkflowAgentOptions } from "./agent.ts";
+import type { AgentHistoryEntry } from "./agent-history.ts";
+import {
+  type AgentDefinition,
+  type AgentRegistry,
+  agentDefinitionKey,
+  loadAgentRegistry,
+  resolveAgentType,
+} from "./agent-registry.ts";
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_TIMEOUT_MS,
+  MAX_AGENT_RETRIES,
+  MAX_AGENTS_PER_RUN,
+  MAX_CONCURRENCY,
+  MAX_FANOUT_ITEMS,
+  MAX_SCRIPT_BYTES,
+  SCRIPT_TIMEOUT_MS,
+} from "./config.ts";
+import {
+  BUILTIN_CONTEXT_MODES,
+  type ContextModeRegistry,
+  type ContextPrimitives,
+  resolveContextModeLayers,
+  type SystemPromptMode,
+} from "./context-mode.ts";
+import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.ts";
+import { createWorkflowLogger } from "./logger.ts";
+import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.ts";
+import { assertValidRunId } from "./run-persistence.ts";
+import { createWorktree, removeWorktree, type Worktree } from "./worktree.ts";
+
+export interface WorkflowMetaPhase {
+  title: string;
+  detail?: string;
+  model?: string;
+}
+
+export interface WorkflowMeta {
+  name: string;
+  description: string;
+  phases?: WorkflowMetaPhase[];
+  /** Default model for agents whose phase has no route and that set no model/tier. */
+  model?: string;
+}
+
+/** One cached agent() result, keyed by its deterministic call index. */
+export interface JournalEntry {
+  index: number;
+  /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
+  hash: string;
+  result: unknown;
+  /** Tokens used by the original live agent call, preserved for resume replay. */
+  tokens?: number;
+  /** Provider usage reported by the original live agent call, when available. */
+  usage?: AgentUsage;
+  /** Resolved model used by the original live agent call, when known. */
+  model?: string;
+  /** ISO timestamp for the original live agent start. */
+  startedAt?: string;
+  /** ISO timestamp for the original live agent end. */
+  endedAt?: string;
+}
+
+/**
+ * Global resources shared across a run and any workflow() nested inside it, so
+ * the 16-concurrent / 1000-total caps and the token budget hold across nesting
+ * instead of each level getting its own limiter and counters.
+ */
+export interface SharedRuntime {
+  limiter: <T>(fn: () => Promise<T>) => Promise<T>;
+  agentCount: number;
+  spent: number;
+  tokenUsage: { input: number; output: number; total: number; cost: number; cacheRead: number; cacheWrite: number };
+  depth: number;
+}
+
+export interface WorkflowRunOptions extends WorkflowAgentOptions {
+  args?: unknown;
+  agent?: Pick<WorkflowAgent, "run">;
+  /** The session's main model (provider/id), shown in /workflows for default agents. */
+  mainModel?: string;
+  /**
+   * Named subagent definitions for `agent({ agentType })`. Snapshotted once per
+   * run for determinism. Defaults to scanning `.pi/agents` (project) + `~/.pi/agents`.
+   * Injectable for tests.
+   */
+  agentRegistry?: AgentRegistry;
+  concurrency?: number;
+  /** Retry attempts after a recoverable agent failure. Default 0. */
+  agentRetries?: number;
+  tokenBudget?: number | null;
+  signal?: AbortSignal;
+  /** Maximum number of agents allowed in this run. Default: 1000 */
+  maxAgents?: number;
+  /** Timeout per agent in milliseconds. null/omitted means no hard timeout. */
+  agentTimeoutMs?: number | null;
+  /** Wall-clock timeout for the whole async workflow script. null means no hard timeout. */
+  workflowTimeoutMs?: number | null;
+  /** Whether to persist logs to disk. Default: true */
+  persistLogs?: boolean;
+  /** Run ID for persistence. Auto-generated if not provided. */
+  runId?: string;
+  /**
+   * Directory to persist each subagent's NDJSON transcript into (one file per
+   * subagent). When set, subagent sessions are file-backed so the full message
+   * stream survives disposal — matching Claude Code's `agent-<id>.jsonl` per-subagent
+   * transcripts. When omitted, subagents use in-memory sessions.
+   */
+  transcriptDir?: string;
+  /** Resume: cached agent results keyed by deterministic call index. */
+  resumeJournal?: Map<number, JournalEntry>;
+  /** Resume: the run being resumed (informational; enables resume mode). */
+  resumeFromRunId?: string;
+  /** Called after each live agent completes so the caller can persist the journal. */
+  onAgentJournal?: (entry: JournalEntry) => void;
+  /**
+   * Run-level default context posture — the LOWEST-precedence layer, beneath the
+   * agentType frontmatter and the per-call `agent()` options. Set by a slash
+   * command's `--mode <name>` flag so e.g. `/code-review --mode isolated` runs
+   * every reviewer clean-room without editing any agent `.md`.
+   */
+  contextMode?: string;
+  inheritProjectContext?: boolean;
+  systemPromptMode?: SystemPromptMode;
+  inheritSkills?: boolean;
+  inheritMainRules?: boolean;
+  /**
+   * Named context-mode registry (built-ins + project-defined). Defaults to the
+   * built-ins. Threaded from settings by the extension entry so a project's
+   * `contextModes` are resolvable here and in tool-driven runs.
+   */
+  contextModeRegistry?: ContextModeRegistry;
+  /** Internal: shared runtime inherited by a nested workflow() call. */
+  sharedRuntime?: SharedRuntime;
+  /** Resolve a saved-workflow name to its script, enabling `workflow('name', args)`. */
+  loadSavedWorkflow?: (name: string) => string | undefined;
+  /**
+   * Ask the human a checkpoint() question and resolve to their reply. Threaded from
+   * a UI-bearing tool context. Absent => headless: checkpoint() takes its declared
+   * default (and journals it), so a detached/background run never hangs.
+   */
+  confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
+  onLog?: (message: string) => void;
+  onPhase?: (title: string) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string }) => void;
+  onAgentEnd?: (event: {
+    label: string;
+    phase?: string;
+    result: unknown;
+    tokens?: number;
+    worktree?: string;
+    model?: string;
+    error?: string;
+    errorCode?: WorkflowErrorCode;
+    recoverable?: boolean;
+    startedAt?: string;
+    endedAt?: string;
+  }) => void;
+  onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
+  onTokenUsage?: (usage: {
+    input: number;
+    output: number;
+    total: number;
+    cost: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  }) => void;
+}
+
+export interface WorkflowRunResult<T = unknown> {
+  meta: WorkflowMeta;
+  result: T;
+  logs: string[];
+  phases: string[];
+  agentCount: number;
+  durationMs: number;
+  runId?: string;
+  tokenUsage?: {
+    input: number;
+    output: number;
+    total: number;
+    cost: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+}
+
+export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
+  label?: string;
+  phase?: string;
+  schema?: TSchemaDef;
+  /**
+   * Run this agent on a specific model (`provider/modelId` or a bare `modelId`).
+   * The workflow author chooses per-agent models per the routing policy in the
+   * tool guidelines (e.g. a lighter model for exploration, the main model for
+   * analysis). When omitted, the session's main model is used.
+   */
+  model?: string;
+  /**
+   * Coarse model tier ("small" | "medium" | "big"), resolved from the user's
+   * model-tiers config (see /workflows-models). An explicit `model` takes
+   * precedence; a tier takes precedence over the phase model. When the tier has
+   * no configured entry it falls back to the session's main model.
+   */
+  tier?: string;
+  isolation?: "worktree";
+  /**
+   * Name of a registered subagent definition (`.pi/agents/<name>.md`, project >
+   * user). Binds that definition's tool allow/denylist, model, and body prompt
+   * to this agent. An explicit `model` overrides the definition's model; the
+   * definition's model overrides `tier`/phase. An unknown name logs a warning
+   * and falls back to default tools/model (with the name as a prose hint).
+   */
+  agentType?: string;
+  /**
+   * Context-inheritance posture: a named mode (`focused` | `isolated` | `scoped`
+   * | `legacy` | a project-defined mode) that expands to the primitives below. The
+   * agentType definition may set its own; these call-level fields override it
+   * (runtime > frontmatter). Default `focused` (main-agent rules don't leak in).
+   */
+  contextMode?: string;
+  /** Load project AGENTS.md / context files into this subagent. Default true. */
+  inheritProjectContext?: boolean;
+  /** "append": base prompt + role-as-task (default); "replace": role IS the base system prompt. */
+  systemPromptMode?: SystemPromptMode;
+  /** Load skills into this subagent. Default true. */
+  inheritSkills?: boolean;
+  /** Inherit the main-agent append channel (`.pi/APPEND_SYSTEM.md`). Default false (no leak). */
+  inheritMainRules?: boolean;
+  /** Override timeout for this specific agent. null means no hard timeout. */
+  timeoutMs?: number | null;
+  /** Retry attempts after a recoverable failure for this specific agent. */
+  retries?: number;
+}
+
+/** Options for a human checkpoint() — a deterministic, journaled, replayable gate. */
+export interface CheckpointOptions {
+  /** Reply used when no UI is available (headless/background) and headless != "abort". */
+  default?: unknown;
+  /** Headless behavior: "default" (take `default`/true) or "abort" (throw). Default "default". */
+  headless?: "default" | "abort";
+  /** Confirm | free-text input | pick-one. Affects the hash and the UI widget. */
+  kind?: "confirm" | "input" | "select";
+  /** For kind "select". */
+  choices?: string[];
+  /** Per-checkpoint timeout in ms for the interactive prompt. */
+  timeoutMs?: number;
+}
+
+interface RuntimeState {
+  currentPhase?: string;
+  /**
+   * Per-phase soft sub-budgets carved from the run total: phase title -> the
+   * ceiling and the run-wide spent at the moment the budget was declared. A phase
+   * exceeding its ceiling throws TOKEN_BUDGET_EXHAUSTED while the run's overall
+   * budget is untouched. Soft gate (like the global one): spent accrues after each
+   * agent, so an in-flight wave may overshoot slightly.
+   */
+  phaseBudgets: Map<string, { budget: number; startSpent: number; warned: boolean }>;
+  logs: string[];
+  phases: string[];
+  /** Monotonic, assigned at lexical agent() call time — the stable resume key. */
+  callSeq: number;
+  /**
+   * Index of the first call that missed the resume journal (changed or new).
+   * Longest-unchanged-prefix resume: a cached result is replayed only while
+   * callIndex < firstMiss; once a call misses, it AND everything after run live.
+   */
+  firstMiss: number;
+}
+
+type AnyNode = Node & { [key: string]: any; start: number; end: number };
+
+// Parse-time author hint (fast feedback). The real enforcement is DETERMINISM_PRELUDE.
+const DETERMINISM_BLOCKLIST = /\bDate\s*\.\s*now\b|\bMath\s*\.\s*random\b|\bnew\s+Date\s*\(\s*\)/;
+
+/**
+ * Runtime determinism hardening, run inside the vm realm BEFORE the user script.
+ * It neuters the nondeterministic builtins that would break resume (they'd make a
+ * re-run produce different values than the cached journal):
+ *   - Math.random()        -> throws
+ *   - Date.now()           -> throws
+ *   - Date() / new Date()  -> throws (no-arg); new Date(arg) still works
+ * Using the vm realm's own Math/Date/Reflect (not host objects) means this adds
+ * no host-`Function` escape. Note: vm is not a security sandbox — an injected
+ * bridge function's `.constructor` is still the host Function, so a determined
+ * script could bypass this. The guard is best-effort against ACCIDENTAL
+ * nondeterminism from trusted (user / guided-LLM) scripts, not a security wall.
+ */
+const DETERMINISM_PRELUDE = [
+  '"use strict";',
+  'Math.random = () => { throw new Error("Math.random() is unavailable in a workflow (it breaks resume); pass randomness via args or vary by index"); };',
+  "{",
+  "  const RealDate = Date;",
+  '  const fail = (w) => { throw new Error(w + " is unavailable in a workflow (it breaks resume); pass a timestamp via args"); };',
+  "  const SafeDate = function (...a) {",
+  '    if (!new.target) fail("Date()");',
+  '    if (a.length === 0) fail("new Date()");',
+  "    return Reflect.construct(RealDate, a, SafeDate);",
+  "  };",
+  "  SafeDate.UTC = RealDate.UTC;",
+  "  SafeDate.parse = RealDate.parse;",
+  '  SafeDate.now = () => fail("Date.now()");',
+  "  SafeDate.prototype = RealDate.prototype;",
+  "  globalThis.Date = SafeDate;",
+  "}",
+].join("\n");
+
+export async function runWorkflow<T = unknown>(
+  script: string,
+  options: WorkflowRunOptions = {},
+): Promise<WorkflowRunResult<T>> {
+  const started = Date.now();
+  // Reject oversized scripts up front (524288-byte cap). The size is measured on
+  // the raw script source (which is what the model supplies); checking before
+  // parse/execute avoids wasted work.
+  if (script.length > MAX_SCRIPT_BYTES) {
+    throw new WorkflowError(
+      `Script exceeds ${MAX_SCRIPT_BYTES} bytes (got ${script.length}); workflow scripts are capped at ${MAX_SCRIPT_BYTES} bytes`,
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
+  const { meta, body } = parseWorkflowScript(script);
+  // Per-phase model routing from meta.phases[].model, with meta.model as the default.
+  const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
+  const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
+  const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
+  const workflowTimeoutMs =
+    options.workflowTimeoutMs !== undefined ? options.workflowTimeoutMs : DEFAULT_WORKFLOW_TIMEOUT_MS;
+  const runId = options.runId ?? `run-${started.toString(36)}`;
+  assertValidRunId(runId);
+  const baseCwd = options.cwd ?? process.cwd();
+
+  const workflowController = new AbortController();
+  let removeExternalAbortListener: (() => void) | undefined;
+  if (options.signal?.aborted) {
+    workflowController.abort(options.signal.reason);
+  } else if (options.signal) {
+    const onAbort = () => workflowController.abort(options.signal?.reason);
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    removeExternalAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
+  }
+  const runSignal = workflowController.signal;
+  // Snapshot the agentType registry ONCE per run so two agent() calls can't
+  // observe a mid-run edit (determinism); a later resume re-reads it.
+  const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
+
+  // Initialize logger
+  const logger = createWorkflowLogger({
+    runId,
+    cwd: options.cwd ?? process.cwd(),
+    persist: options.persistLogs ?? true,
+    onLog: options.onLog,
+  });
+
+  const state: RuntimeState = {
+    logs: [],
+    // When the script declares meta.phases, default the current phase to the
+    // first one so agents created before any explicit phase() call still group
+    // under a declared phase instead of an orphan "(no phase)" bucket. An
+    // explicit phase() (or agent({ phase })) overrides this.
+    phases: meta.phases?.[0]?.title ? [meta.phases[0].title] : [],
+    currentPhase: meta.phases?.[0]?.title,
+    phaseBudgets: new Map(),
+    callSeq: 0,
+    firstMiss: Number.POSITIVE_INFINITY,
+  };
+
+  const agentRunner = options.agent ?? new WorkflowAgent(options);
+  const concurrency = normalizeConcurrency(
+    // Default concurrency floor is 2: min(16, max(2, cores-2)). Keep the floor at
+    // 2 so single/dual-core boxes still run 2 agents in parallel.
+    options.concurrency ?? Math.max(2, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
+  );
+  // Global caps + budget are shared with any nested workflow() so they hold across nesting.
+  const shared: SharedRuntime = options.sharedRuntime ?? {
+    limiter: createLimiter(concurrency),
+    agentCount: 0,
+    spent: 0,
+    tokenUsage: { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
+    depth: 0,
+  };
+  const limiter = shared.limiter;
+
+  const log = (message: string) => {
+    const text = String(message);
+    state.logs.push(text);
+    logger.log(text);
+  };
+
+  const phase = (title: string, phaseOptions?: { budget?: number }) => {
+    state.currentPhase = title;
+    if (!state.phases.includes(title)) state.phases.push(title);
+    // Carve a soft sub-budget from the run total for work done under this phase.
+    // Re-declaring re-bases from the current spent (idempotent across resume: the
+    // script re-runs phase() and the ceiling is recomputed from live spent).
+    if (typeof phaseOptions?.budget === "number" && phaseOptions.budget > 0) {
+      state.phaseBudgets.set(title, { budget: phaseOptions.budget, startSpent: shared.spent, warned: false });
+    }
+    options.onPhase?.(title);
+  };
+
+  const budget = Object.freeze({
+    total: options.tokenBudget ?? null,
+    spent: () => shared.spent,
+    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - shared.spent)),
+  });
+
+  const throwIfAborted = () => {
+    if (runSignal.aborted) {
+      throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+    }
+  };
+
+  const agent = async (prompt: string, agentOptions: AgentOptions = {}) => {
+    throwIfAborted();
+
+    // Check agent limit
+    if (shared.agentCount >= maxAgents) {
+      throw new WorkflowError(
+        `Agent limit exceeded (${maxAgents}). Use maxAgents option to increase the limit.`,
+        WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
+        { recoverable: false },
+      );
+    }
+
+    if (budget.total !== null && budget.remaining() <= 0) {
+      throw new WorkflowError("workflow token budget exhausted", WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED, {
+        recoverable: false,
+      });
+    }
+
+    const assignedPhase = agentOptions.phase ?? state.currentPhase;
+
+    // Per-phase soft sub-budget gate: a noisy phase can exhaust its own ceiling
+    // without touching the run's overall budget. Soft (spent accrues post-agent),
+    // warns once at ~80%, throws at 100%. Scripts can try/catch around a phase's
+    // work so later phases still proceed.
+    if (assignedPhase) {
+      const pb = state.phaseBudgets.get(assignedPhase);
+      if (pb) {
+        const phaseSpent = shared.spent - pb.startSpent;
+        if (phaseSpent >= pb.budget) {
+          throw new WorkflowError(
+            `phase "${assignedPhase}" token sub-budget exhausted (${pb.budget})`,
+            WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED,
+            { recoverable: false },
+          );
+        }
+        if (!pb.warned && phaseSpent >= pb.budget * 0.8) {
+          pb.warned = true;
+          log(`phase "${assignedPhase}" at ${Math.round((phaseSpent / pb.budget) * 100)}% of its token sub-budget`);
+        }
+      }
+    }
+
+    const requestedLabel = agentOptions.label?.trim();
+
+    // Resolve a named agentType to its bound definition (tools/model/prompt).
+    const agentDef = resolveAgentType(agentOptions.agentType, agentRegistry);
+    if (agentOptions.agentType && !agentDef) {
+      log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
+    }
+
+    // Resolve the context-inheritance posture once: the agentType frontmatter is
+    // the lower-precedence layer, the agent() call options the higher. The result
+    // is passed to run() as explicit primitives (which win over any bare mode), so
+    // run()'s own resolveContextMode reproduces exactly this triple.
+    const { primitives: ctx, unknownMode } = resolveContextModeLayers(
+      [
+        // Lowest precedence: run-level default (e.g. a `--mode` flag).
+        {
+          contextMode: options.contextMode,
+          inheritProjectContext: options.inheritProjectContext,
+          systemPromptMode: options.systemPromptMode,
+          inheritSkills: options.inheritSkills,
+          inheritMainRules: options.inheritMainRules,
+        },
+        // Middle: the agentType `.md` frontmatter.
+        {
+          contextMode: agentDef?.contextMode,
+          inheritProjectContext: agentDef?.inheritProjectContext,
+          systemPromptMode: agentDef?.systemPromptMode,
+          inheritSkills: agentDef?.inheritSkills,
+          inheritMainRules: agentDef?.inheritMainRules,
+        },
+        // Highest: the per-call agent() options.
+        {
+          contextMode: agentOptions.contextMode,
+          inheritProjectContext: agentOptions.inheritProjectContext,
+          systemPromptMode: agentOptions.systemPromptMode,
+          inheritSkills: agentOptions.inheritSkills,
+          inheritMainRules: agentOptions.inheritMainRules,
+        },
+      ],
+      options.contextModeRegistry ?? BUILTIN_CONTEXT_MODES,
+    );
+    if (unknownMode) {
+      log(`[warn] unknown contextMode "${unknownMode}"`);
+    }
+    // Under "replace" the role prompt becomes the system prompt, so it must NOT
+    // also be injected into the task. buildAgentInstructions is told to skip it.
+    const roleAsSystemPrompt = ctx.systemPromptMode === "replace";
+
+    // Model precedence: explicit agentOptions.model > agentType.model > tier > phase model.
+    // The "explicit-level" model is opts.model, else the definition's model — either
+    // beats tier/phase. When only a tier is set, pass undefined here so the tier (not
+    // the phase model) decides inside WorkflowAgent.run().
+    const explicitModel = agentOptions.model ?? agentDef?.model;
+    const modelSpec =
+      explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
+    // For display in /workflows: the model this agent runs on — its explicit/phase
+    // spec, else the session's main model. The real resolved id overrides this via
+    // onModelResolved once the subagent session is created.
+    let displayModel = modelSpec ?? options.mainModel;
+
+    // Deterministic resume key: assigned at lexical call time, before the limiter,
+    // so parallel()/pipeline() fan-out is reproducible for a fixed script.
+    const callIndex = state.callSeq++;
+    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef), ctx);
+
+    // Reserve the agent slot synchronously — atomic with the limit/budget gate
+    // above (no await in between) — so a parallel() fan-out can't all observe the
+    // same agentCount and overshoot maxAgents. (Token budget stays a soft gate:
+    // spent accrues after each agent, matching Claude Code; in-flight agents may
+    // push slightly past total, then further agent() calls throw.)
+    shared.agentCount++;
+    const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
+
+    // Longest-unchanged-prefix resume: replay a cached result only while the
+    // prefix is still intact — this call's index is before the first changed/new
+    // call. Once any call misses, it AND everything after it run live (matching
+    // Claude Code's contract), so an edited upstream call never leaves stale
+    // downstream results served from the journal.
+    const cached = options.resumeJournal?.get(callIndex);
+    const hashMatches = cached != null && cached.hash === callHash;
+    const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
+    if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
+      const cachedModel = cached.model ?? displayModel;
+      if (cached.usage) {
+        shared.tokenUsage.input += cached.usage.input;
+        shared.tokenUsage.output += cached.usage.output;
+        shared.tokenUsage.total += cached.usage.total;
+        shared.tokenUsage.cost += cached.usage.cost;
+        shared.tokenUsage.cacheRead += cached.usage.cacheRead;
+        shared.tokenUsage.cacheWrite += cached.usage.cacheWrite;
+      } else if (typeof cached.tokens === "number") {
+        shared.tokenUsage.total += cached.tokens;
+      }
+      options.onAgentStart?.({
+        label,
+        phase: assignedPhase,
+        prompt,
+        model: cachedModel,
+        startedAt: cached.startedAt,
+      });
+      options.onAgentEnd?.({
+        label,
+        phase: assignedPhase,
+        result: cached.result,
+        tokens: cached.tokens,
+        model: cachedModel,
+        startedAt: cached.startedAt,
+        endedAt: cached.endedAt,
+      });
+      return cached.result;
+    }
+    // A genuine miss (no journal entry, or the hash changed) marks where the
+    // unchanged prefix ends; this call and every later one then run live.
+    if (!hashMatches || cachedEmptyOutput) state.firstMiss = Math.min(state.firstMiss, callIndex);
+
+    return limiter(async () => {
+      const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
+      const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
+      const maxAttempts = retryAttempts + 1;
+      const startedAt = new Date().toISOString();
+
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel, startedAt });
+
+      // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
+      let worktree: Worktree | undefined;
+      if (agentOptions.isolation === "worktree") {
+        worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
+        if (!worktree.isolated) log(`isolation ignored for "${label}" (${worktree.reason})`);
+      }
+      const runCwd = worktree?.isolated ? worktree.cwd : undefined;
+
+      // Captured from the subagent's real session usage; falls back to an
+      // estimate when the provider reports no usage (total === 0). Usage is reset
+      // per retry attempt so a failed attempt does not double-count the next one.
+      let usage: AgentUsage | undefined;
+      const recordTokens = (result: unknown): number => {
+        const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
+        if (usage) {
+          shared.tokenUsage.input += usage.input;
+          shared.tokenUsage.output += usage.output;
+          shared.tokenUsage.cost += usage.cost;
+          shared.tokenUsage.cacheRead += usage.cacheRead;
+          shared.tokenUsage.cacheWrite += usage.cacheWrite;
+        }
+        shared.tokenUsage.total += tokens;
+        shared.spent += tokens;
+        return tokens;
+      };
+
+      try {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          usage = undefined;
+          try {
+            throwIfAborted();
+
+            // Run agent with an abortable timeout. On timeout we abort the
+            // attempt and wait for the underlying runner to settle before retrying,
+            // releasing the limiter slot, or deleting an isolated worktree.
+            const result = await runWithAbortableTimeout(
+              (attemptSignal) =>
+                agentRunner.run(prompt, {
+                  label,
+                  schema: agentOptions.schema,
+                  signal: attemptSignal,
+                  instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, roleAsSystemPrompt),
+                  model: modelSpec,
+                  tier: agentOptions.tier,
+                  toolNames: agentDef?.tools,
+                  disallowedToolNames: agentDef?.disallowedTools,
+                  // The workflow layer is the single resolution authority: it passes
+                  // the fully-resolved primitives, so the raw mode name is intentionally
+                  // NOT forwarded (a project-mode name would be unknown to agent.ts's
+                  // built-in registry and warn spuriously).
+                  inheritProjectContext: ctx.inheritProjectContext,
+                  systemPromptMode: ctx.systemPromptMode,
+                  inheritSkills: ctx.inheritSkills,
+                  inheritMainRules: ctx.inheritMainRules,
+                  // Role prompt → system prompt only under "replace"; otherwise undefined.
+                  systemPromptText: roleAsSystemPrompt ? agentDef?.prompt : undefined,
+                  cwd: runCwd,
+                  transcriptDir: options.transcriptDir,
+                  onModelResolved: (id: string) => {
+                    displayModel = id;
+                  },
+                  onModelFallback: (spec: string) => {
+                    // Make the silent degrade visible in /workflows, not just console.
+                    log(`${label}: model "${spec}" unavailable — using the session default`);
+                  },
+                  onUsage: (u: AgentUsage) => {
+                    usage = u;
+                  },
+                  onHistory: (history: AgentHistoryEntry[]) => {
+                    options.onAgentHistory?.({ label, phase: assignedPhase, history });
+                  },
+                } as any),
+              timeout,
+              label,
+              runSignal,
+            );
+
+            throwIfAborted();
+            if (isEmptyTextAgentResult(result, agentOptions.schema)) {
+              throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
+                recoverable: true,
+                agentLabel: label,
+              });
+            }
+
+            const tokens = recordTokens(result);
+            const endedAt = new Date().toISOString();
+            options.onAgentJournal?.({
+              index: callIndex,
+              hash: callHash,
+              result,
+              tokens,
+              usage,
+              model: displayModel,
+              startedAt,
+              endedAt,
+            });
+            options.onAgentEnd?.({
+              label,
+              phase: assignedPhase,
+              result,
+              tokens,
+              worktree: runCwd,
+              model: displayModel,
+              startedAt,
+              endedAt,
+            });
+            return result;
+          } catch (error) {
+            if (runSignal.aborted) throw error;
+
+            const workflowError = wrapError(error, { agentLabel: label });
+            logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
+            const tokens = recordTokens(null);
+
+            if (workflowError.recoverable && attempt < maxAttempts) {
+              log(
+                `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
+              );
+              continue;
+            }
+
+            options.onAgentEnd?.({
+              label,
+              phase: assignedPhase,
+              result: null,
+              tokens,
+              worktree: runCwd,
+              model: displayModel,
+              error: workflowError.message,
+              errorCode: workflowError.code,
+              recoverable: workflowError.recoverable,
+              startedAt,
+              endedAt: new Date().toISOString(),
+            });
+
+            if (workflowError.recoverable) {
+              log(
+                `agent "${label}" exhausted ${maxAttempts} attempt${maxAttempts === 1 ? "" : "s"}: ${workflowError.code} ${workflowError.message}`,
+              );
+              return null;
+            }
+            throw workflowError;
+          }
+        }
+        return null;
+      } finally {
+        // Always tear down the worktree, even on timeout/abort.
+        if (worktree?.isolated) await removeWorktree(worktree);
+      }
+    });
+  };
+
+  const parallel = async (thunks: Array<() => Promise<unknown>>) => {
+    throwIfAborted();
+    if (!Array.isArray(thunks)) throw new TypeError("parallel() expects an array of functions");
+    if (thunks.some((thunk) => typeof thunk !== "function")) {
+      throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
+    }
+    if (thunks.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `parallel() accepts at most ${MAX_FANOUT_ITEMS} items (got ${thunks.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
+    return Promise.all(
+      thunks.map(async (thunk, index) => {
+        try {
+          return await thunk();
+        } catch (error) {
+          if (runSignal.aborted) throw error;
+          const workflowError = wrapError(error);
+          // Non-recoverable failures (token budget / agent limit exhausted) must
+          // halt the whole run, exactly like a directly-awaited agent() — not be
+          // swallowed into a null in the result array.
+          if (!workflowError.recoverable) throw workflowError;
+          log(`parallel[${index}] failed: ${workflowError.message}`);
+          return null;
+        }
+      }),
+    );
+  };
+
+  const pipeline = async (
+    items: unknown[],
+    ...stages: Array<(prev: unknown, original: unknown, index: number) => unknown>
+  ) => {
+    throwIfAborted();
+    if (!Array.isArray(items)) throw new TypeError("pipeline() expects an array as the first argument");
+    if (stages.some((stage) => typeof stage !== "function")) {
+      throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
+    }
+    if (items.length > MAX_FANOUT_ITEMS) {
+      throw new WorkflowError(
+        `pipeline() accepts at most ${MAX_FANOUT_ITEMS} items (got ${items.length})`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
+    return Promise.all(
+      items.map(async (item, index) => {
+        let value: unknown = item;
+        for (const stage of stages) {
+          try {
+            throwIfAborted();
+            value = await stage(value, item, index);
+            throwIfAborted();
+          } catch (error) {
+            if (runSignal.aborted) throw error;
+            const workflowError = wrapError(error);
+            // Non-recoverable failures halt the whole run (see parallel()).
+            if (!workflowError.recoverable) throw workflowError;
+            log(`pipeline[${index}] failed: ${workflowError.message}`);
+            return null;
+          }
+        }
+        return value;
+      }),
+    );
+  };
+
+  // Nested workflow(): run a saved workflow (or a raw script) inline, sharing this
+  // run's limiter/counters/budget so the global caps hold. One level deep only.
+  const workflowFn = async (nameOrScript: string, childArgs?: unknown) => {
+    throwIfAborted();
+    if (shared.depth >= 1) {
+      throw new WorkflowError("workflow() can nest only one level deep", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+        recoverable: false,
+      });
+    }
+    const resolved = options.loadSavedWorkflow?.(String(nameOrScript));
+    const childScript = resolved ?? String(nameOrScript);
+    shared.depth++;
+    try {
+      const child = await runWorkflow(childScript, {
+        ...options,
+        args: childArgs,
+        sharedRuntime: shared,
+        signal: runSignal,
+        // A nested run is its own script; never reuse the parent's resume journal.
+        resumeJournal: undefined,
+        resumeFromRunId: undefined,
+        runId: `${runId}-nested${shared.depth}`,
+        persistLogs: false,
+      });
+      return child.result;
+    } finally {
+      shared.depth--;
+    }
+  };
+
+  // ── Quality-pattern stdlib: reusable, deterministic helpers built purely on
+  // agent()/parallel() (so callSeq ordering stays stable and resume keeps working).
+  // Injected as globals so workflow scripts compose them directly. ──
+
+  const VERIFY_SCHEMA = {
+    type: "object",
+    properties: { real: { type: "boolean" }, reason: { type: "string" } },
+    required: ["real"],
+  };
+  const verify = async (
+    item: unknown,
+    opts: { reviewers?: number; threshold?: number; lens?: string | string[] } = {},
+  ) => {
+    const reviewers = Math.max(1, opts.reviewers ?? 2);
+    const threshold = opts.threshold ?? 0.5;
+    const lenses = opts.lens ? (Array.isArray(opts.lens) ? opts.lens : [opts.lens]) : [];
+    const claim = typeof item === "string" ? item : JSON.stringify(item);
+    const votes = (
+      await parallel(
+        Array.from(
+          { length: reviewers },
+          (_v, i) => () =>
+            agent(
+              `Adversarially review whether the following is REAL/correct. Try to refute it; default to real=false if unsure.${lenses.length ? ` Focus lens: ${lenses[i % lenses.length]}.` : ""}\n\n${claim}`,
+              { label: `verify ${i + 1}`, schema: VERIFY_SCHEMA },
+            ),
+        ),
+      )
+    ).filter(Boolean) as Array<{ real?: boolean; reason?: string }>;
+    const realCount = votes.filter((v) => v?.real).length;
+    return { real: votes.length > 0 && realCount / votes.length >= threshold, realCount, total: votes.length, votes };
+  };
+
+  const JUDGE_SCHEMA = {
+    type: "object",
+    properties: { score: { type: "number" }, reason: { type: "string" } },
+    required: ["score"],
+  };
+  const judgePanel = async (attempts: unknown[], opts: { judges?: number; rubric?: string } = {}) => {
+    const judges = Math.max(1, opts.judges ?? 3);
+    const rubric = opts.rubric ?? "overall quality and correctness";
+    const scored = (
+      await parallel(
+        (Array.isArray(attempts) ? attempts : []).map((att, idx) => async () => {
+          const text = typeof att === "string" ? att : JSON.stringify(att);
+          const js = (
+            await parallel(
+              Array.from(
+                { length: judges },
+                (_v, j) => () =>
+                  agent(
+                    `Score this candidate from 0 to 1 on: ${rubric}. Reply with the score.\n\nCandidate:\n${text}`,
+                    {
+                      label: `judge ${idx + 1}.${j + 1}`,
+                      schema: JUDGE_SCHEMA,
+                    },
+                  ),
+              ),
+            )
+          ).filter(Boolean) as Array<{ score?: number }>;
+          const score = js.length ? js.reduce((s, v) => s + (Number(v?.score) || 0), 0) / js.length : 0;
+          return { index: idx, attempt: att, score, judgments: js };
+        }),
+      )
+    ).filter(Boolean) as Array<{ index: number; attempt: unknown; score: number; judgments: unknown[] }>;
+    // Highest mean score; stable tie-break by input index.
+    let best = scored[0];
+    for (const s of scored) if (s.score > best.score || (s.score === best.score && s.index < best.index)) best = s;
+    return best;
+  };
+
+  const loopUntilDry = async (opts: {
+    round: (roundIndex: number) => Promise<unknown[]> | unknown[];
+    key?: (item: unknown) => string;
+    consecutiveEmpty?: number;
+    maxRounds?: number;
+  }) => {
+    if (!opts || typeof opts.round !== "function")
+      throw new TypeError("loopUntilDry requires { round: (i) => items[] }");
+    const key = opts.key ?? ((x: unknown) => JSON.stringify(x));
+    const consecutiveEmpty = Math.max(1, opts.consecutiveEmpty ?? 2);
+    const maxRounds = opts.maxRounds ?? 50;
+    const seen = new Set<string>();
+    const all: unknown[] = [];
+    let dry = 0;
+    for (let r = 0; r < maxRounds && dry < consecutiveEmpty; r++) {
+      let items: unknown[];
+      try {
+        items = (await opts.round(r)) ?? [];
+      } catch (error) {
+        // Budget / agent-limit exhaustion: return the partial result, don't abort.
+        const code = (error as { code?: string })?.code;
+        if (code === WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED || code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) break;
+        throw error;
+      }
+      const fresh = (Array.isArray(items) ? items : []).filter((x) => x != null && !seen.has(key(x)));
+      if (!fresh.length) {
+        dry++;
+        continue;
+      }
+      dry = 0;
+      for (const x of fresh) {
+        seen.add(key(x));
+        all.push(x);
+      }
+    }
+    return all;
+  };
+
+  const COMPLETENESS_SCHEMA = {
+    type: "object",
+    properties: { complete: { type: "boolean" }, missing: { type: "array", items: { type: "string" } } },
+    required: ["complete"],
+  };
+  const completenessCheck = (taskArgs: unknown, results: unknown) =>
+    agent(
+      `Given the task and the results gathered so far, list what is still MISSING (modalities not covered, claims unverified, gaps). Be specific and concise.\n\nTask:\n${JSON.stringify(taskArgs)}\n\nResults so far:\n${JSON.stringify(results).slice(0, 4000)}`,
+      { label: "completeness critic", schema: COMPLETENESS_SCHEMA },
+    );
+
+  // Thin bounded-retry / validation-gate combinators. Sugar over the for-loop +
+  // agent() pattern, but each attempt is a real agent() call so it auto-journals
+  // under a stable callSeq (resume-safe). No backoff: there is no timer in the vm
+  // and a delay has no resume value. NOTE: attempt N+1's call hash depends on N's
+  // live result, so a retry/gate chain cache-miss-cascades on resume (correct).
+  const retry = async (
+    thunk: (attempt: number) => Promise<unknown> | unknown,
+    opts: { attempts?: number; until?: (r: unknown) => boolean } = {},
+  ) => {
+    const attempts = Math.max(1, opts.attempts ?? 3);
+    let last: unknown;
+    for (let i = 0; i < attempts; i++) {
+      last = await thunk(i);
+      if (!opts.until || opts.until(last)) return last;
+    }
+    return last; // attempts exhausted — return the last result (caller inspects it)
+  };
+  const gate = async (
+    thunk: (feedback: string | undefined, attempt: number) => Promise<unknown> | unknown,
+    validator: (r: unknown) => Promise<{ ok: boolean; feedback?: string }> | { ok: boolean; feedback?: string },
+    opts: { attempts?: number } = {},
+  ) => {
+    const attempts = Math.max(1, opts.attempts ?? 3);
+    let feedback: string | undefined;
+    let last: unknown;
+    for (let i = 0; i < attempts; i++) {
+      last = await thunk(feedback, i);
+      const verdict = await validator(last);
+      if (verdict?.ok) return { ok: true, value: last, attempts: i + 1 };
+      feedback = verdict?.feedback; // fed into the next attempt
+    }
+    return { ok: false, value: last, attempts };
+  };
+
+  // Deterministic, journaled, replayable human checkpoint. Spends no tokens, so it
+  // is gated on the agent counter + abort (not budget). On resume the human's reply
+  // replays by callIndex exactly like a cached agent() — the genuine edge over CC,
+  // whose steering is in-session only. Headless (no UI threaded in): takes the
+  // declared default and journals THAT, so a detached/background run never hangs.
+  const checkpoint = async (promptText: string, checkpointOptions: CheckpointOptions = {}) => {
+    throwIfAborted();
+    if (typeof promptText !== "string") throw new TypeError("checkpoint(promptText, options?) needs a prompt string");
+    if (shared.agentCount >= maxAgents) {
+      throw new WorkflowError(
+        `Agent limit exceeded (${maxAgents}). Use maxAgents option to increase the limit.`,
+        WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
+        { recoverable: false },
+      );
+    }
+    const callIndex = state.callSeq++;
+    const callHash = hashCheckpoint(promptText, checkpointOptions);
+    const cached = options.resumeJournal?.get(callIndex);
+    if (cached != null && cached.hash === callHash && callIndex < state.firstMiss) {
+      shared.agentCount++;
+      return cached.result; // replay the journaled human reply
+    }
+    if (cached == null || cached.hash !== callHash) state.firstMiss = Math.min(state.firstMiss, callIndex);
+    shared.agentCount++;
+
+    let reply: unknown;
+    if (options.confirm) {
+      reply = await options.confirm(promptText, checkpointOptions);
+    } else if (checkpointOptions.headless === "abort") {
+      throw new WorkflowError(
+        `checkpoint "${promptText}" needs human input but none is available (headless run)`,
+        WorkflowErrorCode.WORKFLOW_ABORTED,
+        { recoverable: false },
+      );
+    } else {
+      reply = checkpointOptions.default ?? true;
+    }
+    throwIfAborted();
+    options.onAgentJournal?.({ index: callIndex, hash: callHash, result: reply });
+    return reply;
+  };
+
+  const context = vm.createContext({
+    agent,
+    parallel,
+    pipeline,
+    workflow: workflowFn,
+    verify,
+    judgePanel,
+    loopUntilDry,
+    completenessCheck,
+    retry,
+    gate,
+    checkpoint,
+    log,
+    phase,
+    args: options.args,
+    cwd: options.cwd ?? process.cwd(),
+    process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
+    budget,
+    console: {
+      log,
+      info: log,
+      warn: (m: unknown) => log(`[warn] ${String(m)}`),
+      error: (m: unknown) => log(`[error] ${String(m)}`),
+    },
+    // Object/Array/JSON/Math/Date/Promise/Set/Map/etc. come from the vm realm
+    // itself — we deliberately do NOT inject host built-ins, whose .constructor
+    // would be the host Function (a determinism-guard bypass). Math/Date are
+    // neutered in-realm by DETERMINISM_PRELUDE below.
+  });
+
+  const wrapped = `${DETERMINISM_PRELUDE}\n(async () => {\n${body}\n})()`;
+  let result: unknown;
+  try {
+    // Guard synchronous script setup with the 30000 ms runInContext timeout. The
+    // async agent body runs after the Promise is returned, so that timeout only
+    // bounds synchronous parse/setup; wrap the returned Promise too so trusted
+    // scripts that suspend forever are rejected by a real wall-clock timer.
+    const execution = Promise.resolve(
+      new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
+        timeout: SCRIPT_TIMEOUT_MS,
+      }),
+    );
+    result = await withWorkflowTimeout(execution, workflowTimeoutMs, meta.name, workflowController);
+  } finally {
+    removeExternalAbortListener?.();
+  }
+
+  // Persist logs
+  const logFile = logger.persist();
+  if (logFile) {
+    log(`Logs persisted to ${logFile}`);
+  }
+
+  // Emit final token usage
+  options.onTokenUsage?.(shared.tokenUsage);
+
+  return {
+    meta,
+    result: result as T,
+    logs: state.logs,
+    phases: state.phases,
+    agentCount: shared.agentCount,
+    durationMs: Date.now() - started,
+    runId,
+    tokenUsage: shared.tokenUsage,
+  };
+}
+
+export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
+  if (DETERMINISM_BLOCKLIST.test(script)) {
+    throw new WorkflowError(
+      "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
+
+  const ast = parse(script, {
+    ecmaVersion: "latest",
+    sourceType: "module",
+    allowAwaitOutsideFunction: true,
+    allowReturnOutsideFunction: true,
+    ranges: false,
+  }) as AnyNode;
+
+  const first = ast.body?.[0] as AnyNode | undefined;
+  if (first?.type !== "ExportNamedDeclaration") {
+    throw new WorkflowError(
+      "`export const meta = { name, description, phases }` must be the first statement in the script",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      { recoverable: false },
+    );
+  }
+
+  const declaration = first.declaration as AnyNode | null;
+  if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") {
+    throw new WorkflowError(
+      "meta export must be `export const meta = ...`",
+      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+      {
+        recoverable: false,
+      },
+    );
+  }
+  if (declaration.declarations.length !== 1) {
+    throw new WorkflowError("meta export must declare only `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
+  }
+
+  const declarator = declaration.declarations[0] as AnyNode;
+  if (declarator.id?.type !== "Identifier" || declarator.id.name !== "meta") {
+    throw new WorkflowError("meta export must declare `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
+  }
+  if (!declarator.init)
+    throw new WorkflowError("meta must have a literal value", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+      recoverable: false,
+    });
+
+  const meta = evaluateLiteral(declarator.init, "meta");
+  validateMeta(meta);
+
+  return {
+    meta,
+    body: script.slice(0, first.start) + script.slice(first.end),
+  };
+}
+
+function evaluateLiteral(node: AnyNode, path: string): unknown {
+  switch (node.type) {
+    case "ObjectExpression": {
+      const out: Record<string, unknown> = {};
+      for (const prop of node.properties as AnyNode[]) {
+        if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+        if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
+        if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
+        if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
+        const key = propertyKey(prop.key as AnyNode, path);
+        if (key === "__proto__" || key === "constructor" || key === "prototype") {
+          throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+        }
+        out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
+      }
+      return out;
+    }
+    case "ArrayExpression":
+      return (node.elements as Array<AnyNode | null>).map((element, index) => {
+        if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
+        if (element.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+        return evaluateLiteral(element, `${path}[${index}]`);
+      });
+    case "Literal":
+      return node.value;
+    case "TemplateLiteral":
+      if (node.expressions.length > 0) throw new Error(`template interpolation not allowed in ${path}`);
+      return node.quasis.map((quasi: AnyNode) => quasi.value.cooked ?? quasi.value.raw).join("");
+    case "UnaryExpression":
+      if (node.operator === "-" && node.argument?.type === "Literal" && typeof node.argument.value === "number") {
+        return -node.argument.value;
+      }
+      throw new Error(`only negative-number unary allowed in ${path}`);
+    default:
+      throw new Error(`non-literal node type in ${path}: ${node.type}`);
+  }
+}
+
+function propertyKey(node: AnyNode, path: string): string {
+  if (node.type === "Identifier") return node.name;
+  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number"))
+    return String(node.value);
+  throw new Error(`unsupported key type in ${path}: ${node.type}`);
+}
+
+function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
+  if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
+  const value = meta as WorkflowMeta;
+  if (typeof value.name !== "string" || !value.name.trim()) throw new Error("meta.name must be a non-empty string");
+  if (typeof value.description !== "string" || !value.description.trim())
+    throw new Error("meta.description must be a non-empty string");
+  if (value.model !== undefined && typeof value.model !== "string") throw new Error("meta.model must be a string");
+  if (value.phases !== undefined) {
+    if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
+    for (const phase of value.phases) {
+      if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
+        throw new Error("each meta phase must have a title string");
+      }
+    }
+  }
+}
+
+function createLimiter(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const next = () => {
+    active--;
+    queue.shift()?.();
+  };
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
+    active++;
+    try {
+      return await fn();
+    } finally {
+      next();
+    }
+  };
+}
+
+function defaultAgentLabel(phase: string | undefined, index: number): string {
+  return phase ? `${phase} agent ${index}` : `agent ${index}`;
+}
+
+/** Stable identity hash for an agent() call — a cache miss on resume when anything changes. */
+function hashCheckpoint(promptText: string, options: CheckpointOptions): string {
+  const identity = JSON.stringify({
+    promptText,
+    kind: options.kind ?? "confirm",
+    choices: options.choices ?? null,
+  });
+  return createHash("sha256").update(identity).digest("hex");
+}
+
+function hashAgentCall(
+  prompt: string,
+  model: string | undefined,
+  phase: string | undefined,
+  options: AgentOptions,
+  agentDefKey: string | null,
+  resolvedContext: ContextPrimitives,
+): string {
+  const identity = JSON.stringify({
+    prompt,
+    model: model ?? null,
+    tier: options.tier ?? null,
+    phase: phase ?? null,
+    agentType: options.agentType ?? null,
+    // Resolved context primitives are the material session posture. Include them
+    // (not just raw options.contextMode) so a run-level legacy/focused switch or a
+    // project-mode registry change cannot replay stale agent output on resume.
+    context: {
+      inheritProjectContext: resolvedContext.inheritProjectContext,
+      systemPromptMode: resolvedContext.systemPromptMode,
+      inheritSkills: resolvedContext.inheritSkills,
+      inheritMainRules: resolvedContext.inheritMainRules,
+    },
+    rawContext: {
+      contextMode: options.contextMode ?? null,
+      inheritProjectContext: options.inheritProjectContext ?? null,
+      systemPromptMode: options.systemPromptMode ?? null,
+      inheritSkills: options.inheritSkills ?? null,
+      inheritMainRules: options.inheritMainRules ?? null,
+    },
+    // Resolved definition (tools/model/prompt/context) so editing an agent .md
+    // invalidates this call's cached result on a later resume.
+    agentDef: agentDefKey,
+    schema: options.schema ?? null,
+  });
+  return createHash("sha256").update(identity).digest("hex");
+}
+
+function buildAgentInstructions(
+  phase: string | undefined,
+  options: AgentOptions,
+  def: AgentDefinition | undefined,
+  roleAsSystemPrompt = false,
+): string | undefined {
+  const lines: string[] = [];
+  // A resolved agentType binds a real role prompt (the definition body). Only
+  // fall back to the prose hint when the agentType named no known definition.
+  // When the resolved context mode is "replace", the role prompt is installed as
+  // the session system prompt instead of the task, so skip it here to avoid
+  // duplicating it across both the system prompt and the task turn.
+  if (def?.prompt && !roleAsSystemPrompt) lines.push(def.prompt);
+  else if (options.agentType && !def?.prompt) lines.push(`Act as workflow subagent type: ${options.agentType}`);
+  if (phase) lines.push(`Workflow phase: ${phase}`);
+  if (options.isolation) lines.push(`Requested isolation: ${options.isolation}`);
+  // Note: options.model is applied for real via the session, not injected as prose.
+  return lines.length ? lines.join("\n\n") : undefined;
+}
+
+function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
+  return schema === undefined && typeof result === "string" && result.trim().length === 0;
+}
+
+function estimateTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? "").length / 4);
+}
+
+function normalizeConcurrency(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return 1;
+  return Math.min(MAX_CONCURRENCY, Math.floor(value));
+}
+
+function normalizeAgentRetries(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
+  return Math.min(MAX_AGENT_RETRIES, Math.floor(value));
+}
+
+function linkAbortSignal(parent: AbortSignal | undefined, child: AbortController): () => void {
+  if (!parent) return () => {};
+  if (parent.aborted) {
+    child.abort(parent.reason);
+    return () => {};
+  }
+  const onAbort = () => child.abort(parent.reason);
+  parent.addEventListener("abort", onAbort, { once: true });
+  return () => parent.removeEventListener("abort", onAbort);
+}
+
+/**
+ * Run one agent attempt with an abortable timeout. A timeout aborts the attempt
+ * and then awaits the underlying runner before returning control to the limiter,
+ * so retries/worktree cleanup cannot race a still-running timed-out agent.
+ */
+async function runWithAbortableTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  ms: number | null,
+  label: string,
+  parentSignal: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const unlinkParent = linkAbortSignal(parentSignal, controller);
+  const attemptSignal = controller.signal;
+  let promise: Promise<T>;
+  try {
+    promise = Promise.resolve(run(attemptSignal));
+  } catch (error) {
+    unlinkParent();
+    throw error;
+  }
+  if (ms === null) {
+    try {
+      return await promise;
+    } finally {
+      unlinkParent();
+    }
+  }
+
+  let timeoutId: NodeJS.Timeout | undefined;
+  const timeoutError = new WorkflowError(
+    `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,
+    WorkflowErrorCode.AGENT_TIMEOUT,
+    { recoverable: true },
+  );
+  let timedOut = false;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      reject(timeoutError);
+      controller.abort(timeoutError);
+    }, ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } catch (error) {
+    if (!timedOut) throw error;
+    // The timeout is the public result. Still wait for the runner to observe the
+    // abort and settle before a retry or finally-block can proceed.
+    try {
+      await promise;
+    } catch {
+      // Ignore the runner's abort error; report the timeout consistently.
+    }
+    throw timeoutError;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    unlinkParent();
+  }
+}
+
+/**
+ * Bounds async workflow scripts that suspend forever. This is a trusted-code
+ * safety belt, not a same-process CPU-loop sandbox; on timeout we abort the
+ * workflow signal so any in-flight agents can clean up.
+ */
+async function withWorkflowTimeout<T>(
+  promise: Promise<T>,
+  ms: number | null,
+  workflowName: string,
+  controller: AbortController,
+): Promise<T> {
+  let timeoutId: NodeJS.Timeout | undefined;
+  let removeAbortListener: (() => void) | undefined;
+  const races: Promise<T | never>[] = [promise];
+  const abortError = () =>
+    controller.signal.reason instanceof WorkflowError
+      ? controller.signal.reason
+      : new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+
+  races.push(
+    new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const onAbort = () => reject(abortError());
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+    }),
+  );
+
+  if (ms !== null) {
+    const timeoutError = new WorkflowError(
+      `Workflow "${workflowName}" timed out after ${ms}ms`,
+      WorkflowErrorCode.WORKFLOW_TIMEOUT,
+      { recoverable: true },
+    );
+    races.push(
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller.abort(timeoutError);
+          reject(timeoutError);
+        }, ms);
+      }),
+    );
+  }
+
+  try {
+    return (await Promise.race(races)) as T;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    removeAbortListener?.();
+  }
+}
