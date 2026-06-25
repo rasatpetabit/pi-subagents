@@ -81,6 +81,36 @@ The new test locks the invariant so a future refactor that stops passing a
 prompt path (which would let Pi re-discover and inherit APPEND_SYSTEM.md) fails
 loudly. Full unit suite green (566/566), biome clean.
 
+## 2026-06-24 — LIVE end-to-end validation (real guard) found + fixed 2 more bugs
+
+Scope: ran the full path through the real `WorkflowManager.runSync` + the REAL
+`agent-dispatch guard` subprocess (not the stub). Added a durable live integration
+test (`test/integration/workflow-governance-live.test.ts`).
+
+The e2e caught two bugs that ALL unit tests + both cross-vendor review rounds missed
+(the stub masked them):
+- **consultGuard mis-handled the deny exit code.** The real `agent-dispatch guard`
+  exits NON-ZERO (code 2) on a deny while printing the verdict JSON on stdout; the
+  unit stub did `process.exit(0)`. So `execFileSync` threw on every real deny →
+  `consultGuard` fell to the catch → fail-closed `guard_unavailable` instead of a
+  clean `deny`. Enforcement still HELD (rejected either way) but with the wrong
+  verdict/reason. Fix: `consultGuard` now parses `err.stdout` on a non-zero exit and
+  only treats a genuinely unparseable/missing-binary result as unavailable. Stub
+  updated to exit 2 on deny (faithful) so the suite actually covers this.
+- **WorkflowManager.emit("error") with no listener crashes the host.** `register.ts`
+  built the manager but attached no `"error"` listener; Node throws
+  ERR_UNHANDLED_ERROR on `emit("error")` with none, so the FIRST failing workflow
+  (governance denial, agent error, timeout) would take down the Pi session — even
+  though `runSync` rejection is separately caught. Fix: `register.ts` attaches a
+  quiet safety-net `"error"` listener (failure is still surfaced via the tool result).
+
+Live e2e now: forbidden haiku → `GovernanceDenied` code `GOVERNANCE_DENIED` verdict
+`deny` recoverable `false` (clean, correct reason). The lease is a lockfile (no
+timer/fd) and IS released on failed runs (workflow-manager.ts:570) — no leak; the
+test runner's lingering handle is the MCP harness, so `test:integration` now passes
+`--test-force-exit` (forces exit only AFTER tests settle; the 390 existing tests are
+unaffected). Suites: unit 582/582, integration 391/391 (0 skipped), biome clean.
+
 ## 2026-06-24 — adversarial-review dev cycle + governance seam hardening (3 findings → fixed)
 
 Scope: stood up a working cross-vendor adversarial-review cycle and ran it on the

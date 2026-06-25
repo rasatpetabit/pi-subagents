@@ -50,7 +50,10 @@ if (verb === "guard") {
   };
   const v = (input.model === "haiku" || input.model === "sonnet") ? "deny" : "allow";
   process.stdout.write(JSON.stringify({ verdict: v, reason: reasons[input.model] ?? "allowed-model" }));
-  process.exit(0);
+  // Mirror the REAL CLI: a block/deny verdict exits NON-ZERO (code 2) while still
+  // printing the verdict JSON; allow exits 0. (consultGuard must parse stdout on
+  // the non-zero deny exit, not treat it as guard-unavailable.)
+  process.exit(v === "allow" ? 0 : 2);
 }
 if (verb === "record") {
   appendFileSync(${JSON.stringify(ledger)}, inputJson + "\\n");

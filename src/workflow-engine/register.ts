@@ -34,6 +34,19 @@ export function registerWorkflowTool(pi: ExtensionAPI): void {
 		contextModeRegistry,
 	});
 
+	// The manager emits an "error" event on ANY workflow failure
+	// (workflow-manager.ts). Node throws ERR_UNHANDLED_ERROR and crashes the host
+	// process when "error" is emitted with no listener — so a single failing
+	// workflow (e.g. a GovernanceDenied, an agent error, a timeout) would take down
+	// the whole Pi session. The failure is ALSO surfaced through the tool's runSync
+	// rejection (workflow-tool.ts), so this listener is purely the EventEmitter
+	// safety net plus a log breadcrumb; keep it quiet.
+	manager.on("error", (payload: unknown) => {
+		const err = (payload as { error?: unknown })?.error ?? payload;
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[workflow] run error: ${msg}`);
+	});
+
 	const workflowTool = createWorkflowTool({ cwd, manager, storage });
 	pi.registerTool(workflowTool);
 

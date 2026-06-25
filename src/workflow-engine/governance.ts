@@ -103,12 +103,31 @@ interface GuardVerdict {
 
 function consultGuard(model: string, taskClass: string): GuardVerdict {
   const input = JSON.stringify({ model, task_class: taskClass });
-  const out = execFileSync(guardCmd(), ["guard", "--input", input], {
-    encoding: "utf8",
-    timeout: 10_000,
-    // guard prints its JSON verdict on stdout and exits 0 even on deny.
-  });
-  return JSON.parse(out) as GuardVerdict;
+  try {
+    const out = execFileSync(guardCmd(), ["guard", "--input", input], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    return JSON.parse(out) as GuardVerdict;
+  } catch (err) {
+    // `agent-dispatch guard` exits NON-ZERO (code 2) on a block/deny while STILL
+    // printing the verdict JSON on stdout, so execFileSync throws on a legitimate
+    // deny. Recover the verdict from the captured stdout. Only a missing/broken
+    // binary — or any other failure that yields no parseable verdict — is a true
+    // "guard unavailable" and is re-thrown to the fail-closed path in
+    // governModelSpec. (Verified against the live CLI: haiku/sonnet → exit 2 +
+    // {"verdict":"deny"}; opus/fable → exit 0 + {"verdict":"allow"}.)
+    const raw = (err as { stdout?: unknown })?.stdout;
+    const stdout = typeof raw === "string" ? raw : raw && typeof (raw as Buffer).toString === "function" ? (raw as Buffer).toString("utf8") : "";
+    if (stdout.trim()) {
+      try {
+        return JSON.parse(stdout) as GuardVerdict;
+      } catch {
+        // Non-JSON stdout — fall through to re-throw (treated as unavailable).
+      }
+    }
+    throw err;
+  }
 }
 
 /**
