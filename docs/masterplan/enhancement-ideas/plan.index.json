@@ -3,19 +3,13 @@
   "tasks": [
     {
       "id": 1,
-      "description": "Add additive OPTIONAL fields (role, model, tier, reasoning) to the per-agent progress step (AsyncJobStep) in the shared progress model src/shared/types.ts. Optional-only and type-additive: no existing field changes, no behavior change, absent renders as the existing dash fallback. Both feeders populate only what applies to them. This is the foundational typed surface the adapter (task 3) writes into and the widget (task 4) reads from.",
+      "description": "Add additive OPTIONAL fields (role, model, tier, reasoning) to the per-agent progress step (AsyncJobStep) in the shared progress model src/shared/types.ts. Optional-only and type-additive: no existing field changes, no behavior change, absent renders as the existing dash fallback. Both feeders populate only what applies to them. This is the foundational typed surface the workflow adapter (task 3), the subagent feeder (task 8), and the widget (task 4) read from / write into.",
       "wave": 0,
-      "files": [
-        "src/shared/types.ts"
-      ],
-      "verify_commands": [
-        "npm run test:unit"
-      ],
+      "files": ["src/shared/types.ts"],
+      "verify_commands": ["npm run test:unit"],
       "codex": "ok",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#shared-model-extension"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#shared-model-extension"]
     },
     {
       "id": 2,
@@ -27,18 +21,14 @@
         "src/workflow-engine/workflow-manager.ts",
         "src/workflow-engine/VENDOR.md"
       ],
-      "verify_commands": [
-        "npm run test:unit"
-      ],
+      "verify_commands": ["npm run test:unit"],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#vendor-seam"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#vendor-seam"]
     },
     {
       "id": 3,
-      "description": "Design and build WorkflowProgressAdapter at src/observability/workflow-progress-adapter.ts (NEW code OUTSIDE the vendored dir). On each WorkflowManager event it RE-READS the authoritative snapshot (manager.getRun(runId).snapshot, the source of truth per spec H3) and projects run->one job entry + each snapshot.agents[i]->one step (role/model/tier/reasoning/phase/status/tokens-absolute/startedAt/endedAt) into the shared progress model from task 1; events only trigger re-projection. Must: initial-sync-on-attach via manager.listRuns() (a run already past agentStart shows immediately, no further event needed); per-run cleanup on terminal event with manager-listener detach only on shutdown (completing one run never blinds concurrent runs); idempotent registration (double attach = one listener set); never-throw into the host (mirror installResultDelivery try/catch discipline in register.ts); coalesce re-projection rather than re-render per event. The companion unit test test/unit/workflow-progress-adapter.test.ts MUST cover: snapshot->step projection incl LATE model resolution; two-column (tier/reasoning) population with dash fallbacks; out-of-order/duplicate/pre-attach events must not corrupt state; attach-after-running listRuns initial sync; emit-before-mutate convergence; concurrent-run teardown (complete/abort one run keeps the other updating); idempotent registration; never-throw guard on malformed event/snapshot.",
+      "description": "Design and build WorkflowProgressAdapter at src/observability/workflow-progress-adapter.ts (NEW code OUTSIDE the vendored dir). On each WorkflowManager event it RE-READS the authoritative snapshot (manager.getRun(runId).snapshot, the source of truth per spec H3) and projects run->one job entry + each snapshot.agents[i]->one step (role/model/tier/reasoning/phase/status/tokens-absolute/startedAt/endedAt) into the shared progress model from task 1; events only trigger re-projection. ID-NAMESPACE SAFETY (adversary suggestion #2): the adapter MUST register its workflow job under a namespaced id (e.g. `workflow:${runId}`) so it can never collide with, overwrite, or terminal-clean a subagent job's row in the shared registry. Must: initial-sync-on-attach via manager.listRuns(); per-run cleanup on terminal event with manager-listener detach only on shutdown (completing one run never blinds concurrent runs); idempotent registration (double attach = one listener set); never-throw into the host (mirror installResultDelivery try/catch discipline in register.ts); coalesce re-projection. The companion unit test test/unit/workflow-progress-adapter.test.ts MUST cover: snapshot->step projection incl LATE model resolution; two-column (tier/reasoning) population with dash fallbacks; out-of-order/duplicate/pre-attach events must not corrupt state; attach-after-running listRuns initial sync; emit-before-mutate convergence; concurrent-run teardown (complete/abort one run keeps the other updating); idempotent registration; never-throw guard on malformed event/snapshot; AND a workflow/subagent ID-collision test proving a workflow run cannot overwrite or clean up a same-id subagent row.",
       "wave": 1,
       "files": [
         "src/observability/workflow-progress-adapter.ts",
@@ -50,10 +40,7 @@
       ],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#approach-a-adapter",
-        "docs/masterplan/enhancement-ideas/spec.md#adapter-projection"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#approach-a-adapter", "docs/masterplan/enhancement-ideas/spec.md#adapter-projection"]
     },
     {
       "id": 4,
@@ -69,65 +56,70 @@
       ],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#effort-columns",
-        "docs/masterplan/enhancement-ideas/spec.md#surface"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#effort-columns", "docs/masterplan/enhancement-ideas/spec.md#surface"]
     },
     {
       "id": 5,
-      "description": "Wire the WorkflowProgressAdapter (built in task 3) into the workflow tool registration in src/workflow-engine/register.ts alongside installResultDelivery and installWorkflowCommands, under the same independent guard and mirroring its try/catch/never-throw discipline. Attach exactly one listener set per manager (idempotent) and ensure a single bad event never crashes the host session (same rationale as the existing manager.on(error) safety net). Decide the exact attach point by reading register.ts; this is the seam that makes workflow runs appear in the shared live-state registry the widget reads.",
+      "description": "Wire the WorkflowProgressAdapter (built in task 3) into the workflow tool registration in src/workflow-engine/register.ts alongside installResultDelivery and installWorkflowCommands, under the same independent guard and mirroring its try/catch/never-throw discipline. Attach exactly one listener set per manager (idempotent) and ensure a single bad event never crashes the host session (same rationale as the existing manager.on(error) safety net). VENDOR DOC (adversary suggestion #3): register.ts is vendored upstream code, so append a short Local modifications note to src/workflow-engine/VENDOR.md documenting the adapter-attach seam so a future re-sync re-applies it (distinct from task 2's tier/agentType entry). DEDICATED TEST (adversary re-review): add test/unit/workflow-register-adapter.test.ts proving one adapter listener set per manager, repeated registration is idempotent, and an adapter attach/event error does not crash registration. Decide the exact attach point by reading register.ts.",
       "wave": 2,
       "files": [
-        "src/workflow-engine/register.ts"
+        "src/workflow-engine/register.ts",
+        "src/workflow-engine/VENDOR.md",
+        "test/unit/workflow-register-adapter.test.ts"
       ],
       "verify_commands": [
+        "node --experimental-strip-types --test test/unit/workflow-register-adapter.test.ts",
         "npm run test:unit"
       ],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#adapter-lifecycle",
-        "docs/masterplan/enhancement-ideas/spec.md#new-code"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#adapter-lifecycle", "docs/masterplan/enhancement-ideas/spec.md#new-code"]
     },
     {
       "id": 6,
-      "description": "Add the unified /runs query command to src/slash/slash-commands.ts: it reads the shared live-state registry (src/slash/slash-live-state.ts, the same surface the widget reads) and prints one active-delegation table covering BOTH subagent jobs and workflow agents with the per-agent columns (role/model/tier/reasoning/status/phase/tokens/elapsed), honoring MAX_WIDGET_JOBS. /workflows status|stop (workflow-specific control) stays unchanged. Confirm the command name /runs is free at implementation time; fall back to /agents if it collides. Keep reads single-source (the live-state registry, never a second data path).",
+      "description": "Add the unified /runs query command to src/slash/slash-commands.ts: it reads the shared live-state registry (src/slash/slash-live-state.ts, the same surface the widget reads) and prints one active-delegation table covering BOTH subagent jobs and workflow agents with the per-agent columns (role/model/tier/reasoning/status/phase/tokens/elapsed), honoring MAX_WIDGET_JOBS. /workflows status|stop (workflow-specific control) stays unchanged. Confirm the command name /runs is free at implementation time; fall back to /agents if it collides. Keep reads single-source (the live-state registry, never a second data path). DEDICATED TEST (adversary suggestion #4): add test/unit/runs-command.test.ts covering command registration, the unified-table output, MAX_WIDGET_JOBS truncation, dash fallbacks, and the /agents fallback path.",
       "wave": 2,
       "files": [
-        "src/slash/slash-commands.ts"
+        "src/slash/slash-commands.ts",
+        "test/unit/runs-command.test.ts"
       ],
       "verify_commands": [
-        "npm run test:unit",
-        "npm run test:integration"
+        "node --experimental-strip-types --test test/unit/runs-command.test.ts",
+        "npm run test:unit"
       ],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#surface",
-        "docs/masterplan/enhancement-ideas/spec.md#command-name-collision"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#surface", "docs/masterplan/enhancement-ideas/spec.md#command-name-collision"]
     },
     {
       "id": 7,
-      "description": "Integration test test/integration/unified-observability.test.ts: run a small real workflow (inline, foreground) and assert it surfaces in the unified view (the shared live-state registry / /runs projection) with role, model, and tier populated and reasoning shown as dash; assert that on run completion the finished run's projection is torn down (per-run cleanup) while the live widget continues to serve. Exercise the real WorkflowManager event stream end-to-end through the adapter wiring from task 5. This is the cross-engine end-to-end proof for the whole feature.",
+      "description": "Integration test test/integration/unified-observability.test.ts exercising BOTH halves of the unified view end-to-end. Workflow half: run a small real workflow (inline, foreground) and assert it surfaces in the unified view (shared live-state registry / /runs projection) with role, model, and tier populated and reasoning shown as dash; assert that on run completion the finished run's projection is torn down (per-run cleanup, namespaced id) while the live widget continues to serve. SUBAGENT half (adversary re-review — proves the unified \"both\" claim, not just the workflow side): run a real subagent delegation and assert its row shows role, model, and reasoning populated with tier dashed. Exercise the real event streams through the adapter wiring (task 5) and the subagent feeder (task 8). This is the cross-engine end-to-end proof for the whole feature.",
       "wave": 3,
-      "files": [
-        "test/integration/unified-observability.test.ts"
-      ],
+      "files": ["test/integration/unified-observability.test.ts"],
       "verify_commands": [
         "node --experimental-transform-types --import ./test/support/register-loader.mjs --test --test-force-exit test/integration/unified-observability.test.ts",
         "npm run test:all"
       ],
       "codex": "no",
       "sensitive": false,
-      "spec_refs": [
-        "docs/masterplan/enhancement-ideas/spec.md#testing",
-        "docs/masterplan/enhancement-ideas/spec.md#integration"
-      ]
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#testing", "docs/masterplan/enhancement-ideas/spec.md#integration"]
+    },
+    {
+      "id": 8,
+      "description": "SUBAGENT FEEDER POPULATION (adversary suggestion #1 — closes the real gap that otherwise leaves subagent rows rendering dashes). Wire the EXISTING subagent progress path so each per-agent step carries role/model/reasoning into the typed fields added in task 1. role comes from the agent name/label ALREADY in the nested event payload; model and reasoning are NOT currently in the nested-event stream, so this task must THREAD them through: emit the resolved per-call model and the thinking/reasoning level (src/shared/model-info.ts, THINKING_LEVELS) into the nested status event from the child runner (src/runs/background/subagent-runner.ts), then parse + map them onto the step in the status builder (src/runs/shared/nested-events.ts). tier stays absent/dash on the subagent side (it is the workflow routing axis). The companion unit test test/unit/subagent-step-fields.test.ts MUST cover: a subagent step populates role + model + reasoning, tier renders dash; absent values fall back to dash without crashing; reasoning reflects the configured thinking level; AND cover the real emitted nested-event shape (not only synthetic builder input) so the emit->parse path is proven. Without this task the unified view's subagent half is empty, defeating the feature goal.",
+      "wave": 1,
+      "files": [
+        "src/runs/shared/nested-events.ts",
+        "src/runs/background/subagent-runner.ts",
+        "test/unit/subagent-step-fields.test.ts"
+      ],
+      "verify_commands": [
+        "node --experimental-strip-types --test test/unit/subagent-step-fields.test.ts",
+        "npm run test:unit"
+      ],
+      "codex": "no",
+      "sensitive": false,
+      "spec_refs": ["docs/masterplan/enhancement-ideas/spec.md#shared-model-extension", "docs/masterplan/enhancement-ideas/spec.md#effort-columns"]
     }
-  ],
-  "plan_hash": "sha256:ace8b32ce65474a87eeb88335b03e934acd1571aa6a5b6901bd12c11093defbf",
-  "generated_at": "2026-06-26T15:06:23.355Z"
+  ]
 }
