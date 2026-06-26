@@ -4,6 +4,50 @@ Terse handoff log for collaborating agents/sessions. Read before substantive
 work; append a dated entry (scope + why, not what — the diff shows what) before
 ending.
 
+## 2026-06-25 — fix "request a workflow, get nothing": foreground default + background result delivery
+
+Scope: `src/workflow-engine/workflow-tool.ts` (default flip), `src/workflow-engine/register.ts`
+(`installResultDelivery` + `installWorkflowCommands`), new unit tests
+`test/unit/workflow-tool-default.test.ts` + `test/unit/workflow-result-delivery.test.ts`.
+
+Why: user reported "requesting workflows, not getting any." Root-caused live (not a
+registration failure — the tool IS registered/active; a `pi -p` repro confirmed the
+model calls it). The engine ran to completion (RED/BLUE written to the run JSON,
+`status: completed`) but the result never reached the conversation: the tool
+**defaulted to `background: true`** and promised "the result is delivered back
+automatically," while the delivery mechanism (upstream task-panel) was **excluded by
+the vendoring cut** (VENDOR.md). So: launch → run finishes on disk → silence.
+
+Fix (user chose "Both"):
+- **Foreground by default** — `workflow-tool.ts:221` `params.background ?? true` → `?? false`.
+  A plain "run a workflow" now blocks on `runSync` and returns the result inline this
+  turn. Schema description + prompt guideline + comment updated; background is explicit
+  opt-in. **Live-verified** via `pi -p`: returned `red: RED / blue: BLUE` inline.
+- **Background delivery** — `installResultDelivery(pi, manager)` listens on the manager's
+  `"complete"` event and, gated on `getRun(runId)?.background` (foreground already
+  returned inline) + per-run dedupe, delivers via `pi.sendMessage({…}, { triggerTurn: true })`
+  (mirrors `runs/background/notify.ts`). Plus `/workflows status [id] | stop <id>`.
+  NOTE: background delivery is **not** headlessly verifiable (`pi -p` exits before a
+  detached result lands) — proven at unit level (3/3); **needs a confirm in a live
+  interactive session**. With foreground now default, this path only runs on explicit
+  `background: true`, so the unit test is the primary guard.
+- Both installs wrapped in their own try/catch in `register.ts` so a failure there can
+  never block the critical-path tool registration.
+
+Also fixed a separate pre-existing integration failure surfaced during this work:
+`fork-context-execution` "top-level parallel config overrides for maxTasks". Despite the
+name it was **not** a maxTasks logic bug — the cap honors the config override fine.
+Diagnostic showed `EACCES … /tmp/subagent-artifacts/…_input.md`, callCount=0: the test
+hardcoded `sessionFile: "/tmp/parent.jsonl"`, and per-subagent input files are written to
+`<sessionDir>/subagent-artifacts` (`shared/artifacts.ts`), i.e. world-shared
+`/tmp/subagent-artifacts` — created Jun 24 by UID 1005 (grojas) mode 775, so `ras` can't
+write (sticky `/tmp`, not removable without privileges). Only this test trips it (it's the
+sole sibling whose cap passes and then actually spawns agents; the "Max 8" test rejects
+before any write). Fix: isolate its session file under `tempDir`, matching the
+already-isolated parallel/count tests in the same file. No production code involved.
+
+Suites after both fixes: unit 587/587, integration 392/392.
+
 ## 2026-06-24 — vendored governed `workflow` engine (deterministic fan-out, sibling to `subagent`)
 
 Scope: new `src/workflow-engine/` (vendored pi-dynamic-workflows engine core) +

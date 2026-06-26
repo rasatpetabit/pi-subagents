@@ -37,6 +37,16 @@ agent-dispatch at the single resolution seam. See the repo `WORKLOG.md`.
 3. **`agent.ts` (governance seam)**: model resolution routed through
    `agent-dispatch resolve`/`guard` (fail-closed); outcomes recorded via
    `agent-dispatch record`. _(see that file's `GOVERNANCE` markers)_
+4. **`workflow-tool.ts` default flipped to FOREGROUND** — `params.background ?? true`
+   → `?? false`. Upstream defaults to background because it ships the task-panel that
+   re-delivers detached results; we excluded that surface, so a background default
+   meant "run a workflow → result lands on disk → conversation gets nothing." Inline
+   default returns the result in-turn; background is explicit opt-in.
+5. **`register.ts` re-adds a minimal delivery surface** the excluded task-panel used to
+   provide: `installResultDelivery` (manager `"complete"` → `sendMessage`, gated on
+   `background` + dedupe) and `installWorkflowCommands` (`/workflows status|stop`). NOT
+   the upstream live task-panel — just enough that an opt-in background run is
+   retrievable. Re-applying (4)/(5) on re-sync: both are localized to those two files.
 
 ## Re-syncing with upstream
 

@@ -654,7 +654,16 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	});
 
 	it("uses top-level parallel config overrides for maxTasks and concurrency", async () => {
-		const { manager } = makeSessionManagerRecorder({ sessionFile: "/tmp/parent.jsonl", leafId: "leaf-max-config" });
+		// Isolate the session dir under tempDir: per-subagent input files are written
+		// to `<sessionDir>/subagent-artifacts`, so a shared "/tmp/parent.jsonl" leaks
+		// into a world-shared `/tmp/subagent-artifacts` — which EACCES's on a
+		// multi-user host once another user has created it. (Sibling cap tests can use
+		// /tmp because they reject before any artifact write.) Matches the isolated
+		// session files used by the parallel/count tests above.
+		const { manager } = makeSessionManagerRecorder({
+			sessionFile: path.join(tempDir, "parent-max-config.jsonl"),
+			leafId: "leaf-max-config",
+		});
 		const maxTasksExecutor = makeExecutorWithConfig({ parallel: { maxTasks: 9 } });
 
 		const maxTasksResult = await maxTasksExecutor.execute(

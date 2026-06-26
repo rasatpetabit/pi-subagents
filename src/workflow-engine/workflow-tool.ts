@@ -73,7 +73,7 @@ const workflowToolSchema = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Run the workflow in the background. Default: true — the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when it finishes. Set to false only when you need the result inline in this same turn (the call will block until the workflow completes).",
+        "Run the workflow in the background. Default: false — the tool blocks until the workflow completes and returns its result inline in this same turn, so the output is visible immediately. Set to true for a long-running workflow you don't want to block on: the tool returns immediately with a run ID and the result is delivered back into the conversation when it finishes (track/cancel with `/workflows status <id>` and `/workflows stop <id>`).",
     }),
   ),
   maxAgents: Type.Optional(
@@ -191,7 +191,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       modelRoutingGuideline(),
       agentTypeGuideline(),
       "For workflow, do not assume the parent assistant has repository code context inside subagents; include enough task context and relevant paths in each agent prompt.",
-      "For workflow, runs are background by default: the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when the run finishes. Pass background: false only when you must use the result inline in this same turn (it will block).",
+      "For workflow, runs are inline (foreground) by default: the tool blocks and returns the result in this same turn, so you can use it directly. Pass background: true only for a long-running workflow you don't want to block on — it returns a run ID immediately and the result is delivered back into the conversation when it finishes (track/cancel via `/workflows status <id>` / `/workflows stop <id>`).",
       "For workflow, you may call `await workflow('saved-name', argsObject)` to run a saved workflow inline and use its result; nesting is one level deep only, and the global 16-concurrent / 1000-total caps hold across the nesting.",
     ].filter((g): g is string => typeof g === "string" && g.length > 0),
     parameters: workflowToolSchema,
@@ -213,11 +213,12 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
         : undefined;
 
-      // Background execution is the default: return immediately so the turn ends
-      // and the user isn't blocked. The result is delivered back into the
-      // conversation when the run finishes (see installResultDelivery). Only an
-      // explicit `background: false` blocks for the result inline.
-      if (params.background ?? true) {
+      // Inline (foreground) execution is the default: block on the result and
+      // return it in the same turn, so a plain "run a workflow" request actually
+      // surfaces output. Background is explicit opt-in (`background: true`); its
+      // result is delivered back into the conversation on completion by the
+      // manager's "complete" listener wired in register.ts (installResultDelivery).
+      if (params.background ?? false) {
         const { runId } = manager.startInBackground(script, params.args, {
           maxAgents: params.maxAgents,
           concurrency: params.concurrency,
