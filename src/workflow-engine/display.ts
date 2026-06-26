@@ -20,6 +20,12 @@ export interface WorkflowAgentSnapshot {
   tokens?: number;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
+  /** Routing tier requested for this agent (small/medium/big). Set at agentStart; not the compute-effort axis.
+   * Vendor seam — enhancement-ideas §2. */
+  tier?: string;
+  /** Agent type / role label (e.g. "worker", "oracle", "planner"). Set at agentStart.
+   * Vendor seam — enhancement-ideas §2. */
+  agentType?: string;
   /** ISO timestamp when this agent originally started. Preserved across resume replay. */
   startedAt?: string;
   /** ISO timestamp when this agent originally ended. Preserved across resume replay. */

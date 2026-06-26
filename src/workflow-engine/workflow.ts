@@ -149,7 +149,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string }) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string; tier?: string; agentType?: string }) => void;
   onAgentEnd?: (event: {
     label: string;
     phase?: string;
@@ -561,6 +561,8 @@ export async function runWorkflow<T = unknown>(
         prompt,
         model: cachedModel,
         startedAt: cached.startedAt,
+        tier: agentOptions.tier,
+        agentType: agentOptions.agentType,
       });
       options.onAgentEnd?.({
         label,
@@ -583,7 +585,7 @@ export async function runWorkflow<T = unknown>(
       const maxAttempts = retryAttempts + 1;
       const startedAt = new Date().toISOString();
 
-      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel, startedAt });
+      options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel, startedAt, tier: agentOptions.tier, agentType: agentOptions.agentType });
 
       // Optional per-agent worktree isolation (deterministic name -> stable resume keys).
       let worktree: Worktree | undefined;

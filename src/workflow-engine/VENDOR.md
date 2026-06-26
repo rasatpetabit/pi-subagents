@@ -47,10 +47,16 @@ agent-dispatch at the single resolution seam. See the repo `WORKLOG.md`.
    `background` + dedupe) and `installWorkflowCommands` (`/workflows status|stop`). NOT
    the upstream live task-panel — just enough that an opt-in background run is
    retrievable. Re-applying (4)/(5) on re-sync: both are localized to those two files.
+6. **`display.ts`/`workflow.ts`/`workflow-manager.ts` (tier/agentType propagation seam)** —
+   `WorkflowAgentSnapshot` (display.ts) carries `tier?: string` and `agentType?: string`;
+   the `onAgentStart` event (workflow.ts, cached + live paths) threads `tier`/`agentType`
+   from `agentOptions`; the manager's `agentStart` handler (workflow-manager.ts ~L475) writes
+   them onto the snapshot push so the enhanced-progress adapter can read them.
+   _(enhancement-ideas §2, vendor seam)_.
 
 ## Re-syncing with upstream
 
 Re-fetch the same 19 files at a newer pinned commit, re-apply the rewrites in
-(1)–(2), and re-apply the governance seam (3). The seam is localized to
-`agent.ts`'s model-resolution functions, so a diff against the pinned upstream
-`agent.ts` shows exactly what to re-apply.
+(1)–(2), and re-apply the governance seam (3) and tier/agentType seam (6).
+Both seams are localized to their named files, so a diff against the pinned
+upstream shows exactly what to re-apply.

@@ -660,6 +660,16 @@ export interface AsyncStatus {
 
 export type AsyncJobStep = NonNullable<AsyncStatus["steps"]>[number] & {
 	index?: number;
+	/** Unified delegation-observability fields (enhancement-ideas). Additive + optional:
+	 * absent renders as the existing dash fallback. `model`/`thinking` already exist on the
+	 * base step type; these three are the genuinely-new unified-contract fields. `tier` is the
+	 * workflow ROUTING bucket (small/medium/big) — explicitly NOT compute effort; populated only
+	 * by the workflow-progress adapter. `reasoning` is the unified alias for the model reasoning /
+	 * compute level (subagent side maps it from `thinking`). `role` is the unified label (agent
+	 * name / agentType). See docs/masterplan/enhancement-ideas/spec.md. */
+	role?: string;
+	tier?: string;
+	reasoning?: string;
 };
 
 export interface AsyncJobState {
