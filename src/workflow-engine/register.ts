@@ -15,12 +15,14 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { SubagentState } from "../shared/types.ts";
 import { buildContextModeRegistry } from "./context-mode.ts";
 import type { WorkflowRunResult } from "./workflow.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { createWorkflowStorage } from "./workflow-saved.ts";
 import { loadWorkflowSettings } from "./workflow-settings.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
+import { WorkflowProgressAdapter } from "../observability/workflow-progress-adapter.ts";
 
 /** Set to "1" to keep the workflow tool out of the active set unless opted in. */
 const DISABLE_ENV = "PI_SUBAGENT_DISABLE_WORKFLOW";
@@ -110,7 +112,7 @@ export function installWorkflowCommands(pi: ExtensionAPI, manager: WorkflowManag
 	});
 }
 
-export function registerWorkflowTool(pi: ExtensionAPI): void {
+export function registerWorkflowTool(pi: ExtensionAPI, state: SubagentState): void {
 	if (process.env[DISABLE_ENV] === "1") return;
 
 	const cwd = process.cwd();
@@ -148,6 +150,10 @@ export function registerWorkflowTool(pi: ExtensionAPI): void {
 	try {
 		installResultDelivery(pi, manager);
 		installWorkflowCommands(pi, manager);
+		// Wire the workflow-progress adapter (enhancement-ideas) — same independent guard
+		// and never-throw discipline as installResultDelivery.
+		const adapter = new WorkflowProgressAdapter(manager, state);
+		adapter.attach();
 	} catch (error) {
 		console.warn(
 			`[workflow] result delivery / commands not installed: ${

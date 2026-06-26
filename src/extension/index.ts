@@ -472,7 +472,7 @@ DIAGNOSTICS:
 	// `subagent`). Guarded so an engine init failure can never break the subagent
 	// tool. Opt out with PI_SUBAGENT_DISABLE_WORKFLOW=1.
 	try {
-		registerWorkflowTool(pi);
+		registerWorkflowTool(pi, state);
 	} catch (error) {
 		console.warn(
 			`[pi-subagents] workflow engine registration skipped: ${

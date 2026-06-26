@@ -53,10 +53,16 @@ agent-dispatch at the single resolution seam. See the repo `WORKLOG.md`.
    from `agentOptions`; the manager's `agentStart` handler (workflow-manager.ts ~L475) writes
    them onto the snapshot push so the enhanced-progress adapter can read them.
    _(enhancement-ideas §2, vendor seam)_.
+7. **`register.ts` (workflow-progress adapter seam)** —
+   `registerWorkflowTool(pi, state)` accepts the `SubagentState` so the enhanced-progress
+   adapter (`WorkflowProgressAdapter` from the greenfield `src/observability/` directory)
+   can attach alongside `installResultDelivery`/`installWorkflowCommands` under the
+   same independent try/catch guard. _(enhancement-ideas §5)_. Re-applying (7): a single
+   import + parameter + adapter-attach block in `register.ts`.
 
 ## Re-syncing with upstream
 
 Re-fetch the same 19 files at a newer pinned commit, re-apply the rewrites in
-(1)–(2), and re-apply the governance seam (3) and tier/agentType seam (6).
-Both seams are localized to their named files, so a diff against the pinned
-upstream shows exactly what to re-apply.
+(1)–(2), and re-apply the governance seam (3), tier/agentType seam (6), and
+adapter-attach seam (7). All seams are localized to their named files, so a diff
+against the pinned upstream shows exactly what to re-apply.
