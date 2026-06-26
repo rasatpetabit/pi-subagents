@@ -1,0 +1,20 @@
+PLAN GATE — cross-vendor adversary review (advisory, fail-soft)
+
+Reviewer: skynet gpt-5.5 review xhigh (adversary), via dispatch_review(class=adversary, staged, repo=/srv/dev/ai/pi-subagents-fork).
+Artifacts reviewed: docs/masterplan/enhancement-ideas/plan.md + plan.index.json (staged diff), ~2026-06-26T09:2xZ.
+Duration: ~211303 ms (harness duration_ms).
+
+RESULT: final_verdict = approve · 0 blocking findings · 0 findings (policy=consensus-veto, 1 reviewer, 1 approve).
+The reviewer raised design suggestions (not findings/blockers), recorded here for the implementer's awareness:
+  - (suggestion) Consider also updating the existing subagent live-state feeder to populate role/model/reasoning, so real subagent rows render non-dash — the plan's task 1 only types the fields; the feeder wiring is implied, not an explicit task.
+  - (suggestion) Namespace workflow job IDs (e.g. workflow:${runId}) before writing the shared registry to avoid collision with subagent job IDs.
+  - (suggestion) Task 5 edits vendored register.ts; consider listing VENDOR.md there too (task 2 owns the vendor doc, but task 5 also touches vendor code).
+  - (suggestion) /runs (task 6) has no dedicated test artifact.
+None are blocking; the verdict is APPROVE. These are captured for wave-1/2 implementer discretion.
+
+PROVENANCE NOTE (why this is recorded as 'skipped', not 'done'):
+The dispatch_review tool did not surface a dispatch_id or output_tokens, and the cross-vendor review
+path recorded no row in the agent-dispatch outcomes ledger for this repo, so a 'done' receipt cannot be
+attested per the anti-forgery contract (which requires honest output_tokens > 0). Recording the gate as
+'skipped' (fail-soft) to advance, with the real APPROVE verdict preserved above for audit. This is a
+receipt-mechanics gap, not a degraded lane.
