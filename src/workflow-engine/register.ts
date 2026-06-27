@@ -23,6 +23,7 @@ import { createWorkflowStorage } from "./workflow-saved.ts";
 import { loadWorkflowSettings } from "./workflow-settings.ts";
 import { createWorkflowTool } from "./workflow-tool.ts";
 import { WorkflowProgressAdapter } from "../observability/workflow-progress-adapter.ts";
+import { renderWorkflowWorkerTable, type WorkflowSnapshot } from "./display.ts";
 
 /** Set to "1" to keep the workflow tool out of the active set unless opted in. */
 const DISABLE_ENV = "PI_SUBAGENT_DISABLE_WORKFLOW";
@@ -32,13 +33,19 @@ const WORKFLOW_RESULT_MESSAGE_TYPE = "workflow-result";
 const WORKFLOW_COMMAND_MESSAGE_TYPE = "workflow-command";
 
 /** Format a completed run's result as the message delivered back into the chat. */
-function formatWorkflowResult(runId: string, result: WorkflowRunResult | undefined): string {
+export function formatWorkflowResult(
+	runId: string,
+	result: WorkflowRunResult | undefined,
+	snapshot: WorkflowSnapshot | undefined,
+): string {
 	const name = result?.meta?.name ?? "workflow";
 	const agents = result?.agentCount ?? 0;
 	const value = result?.result;
 	const body = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+	const workers = snapshot ? renderWorkflowWorkerTable(snapshot) : "";
+	const workersSection = workers ? `\n\n## Workers\n\n${workers}` : "";
 	return [
-		`Workflow **${name}** (background run \`${runId}\`) completed with ${agents} agent(s).`,
+		`Workflow **${name}** (background run \`${runId}\`) completed with ${agents} agent(s).${workersSection}`,
 		"",
 		"## Result",
 		"```json",
@@ -68,7 +75,7 @@ export function installResultDelivery(pi: ExtensionAPI, manager: WorkflowManager
 			pi.sendMessage(
 				{
 					customType: WORKFLOW_RESULT_MESSAGE_TYPE,
-					content: formatWorkflowResult(runId, result),
+					content: formatWorkflowResult(runId, result, run?.snapshot),
 					display: true,
 					details: { runId },
 				},

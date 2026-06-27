@@ -28,6 +28,7 @@ import {
 import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.ts";
 import { effectiveModelSpec, governModelSpec, recordOutcome } from "./governance.ts";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.ts";
+import { resolveEffectiveThinking } from "../shared/model-info.ts";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.ts";
 
 /**
@@ -271,6 +272,10 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   tier?: string;
   /** Called with the resolved model id once known (for display/telemetry). */
   onModelResolved?: (modelId: string) => void;
+  /** Called with the resolved model reasoning/thinking level (e.g. "off", "low", "high") once known,
+   *  parsed from the model spec's `:level` suffix or the resolved model's thinking map. Undefined when
+   *  the model has no reasoning axis. For display/telemetry — mirrors onModelResolved. */
+  onReasoning?: (level: string) => void;
   /** Called when `model`/`tier`/phase resolved to a spec that wasn't found (fell back to session default). */
   onModelFallback?: (requestedSpec: string) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
@@ -407,6 +412,8 @@ export class WorkflowAgent {
       resolvedModel = this.resolveModel(modelSpec);
       if (resolvedModel) {
         options.onModelResolved?.(`${resolvedModel.provider}/${resolvedModel.id}`);
+        const level = resolveEffectiveThinking(modelSpec, undefined);
+        if (level) options.onReasoning?.(level);
       } else {
         console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
         options.onModelFallback?.(modelSpec);

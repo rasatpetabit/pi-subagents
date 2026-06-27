@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { installResultDelivery } from "../../src/workflow-engine/register.ts";
 import type { WorkflowManager } from "../../src/workflow-engine/workflow-manager.ts";
 
-function fakeManager(runs: Record<string, { background: boolean }>): WorkflowManager {
+function fakeManager(runs: Record<string, { background: boolean; snapshot?: unknown }>): WorkflowManager {
 	const m = new EventEmitter();
 	(m as unknown as { getRun: (id: string) => unknown }).getRun = (id: string) => runs[id];
 	return m as unknown as WorkflowManager;
@@ -54,5 +54,25 @@ describe("workflow background result delivery", () => {
 		(m as unknown as EventEmitter).emit("complete", { runId: "r3", result: RESULT });
 		(m as unknown as EventEmitter).emit("complete", { runId: "r3", result: RESULT });
 		assert.equal(calls.length, 1, "a run must be delivered at most once");
+	});
+
+	it("includes a ## Workers table populated from the run snapshot", () => {
+		const calls: { msg: { content: string }; opts?: { triggerTurn?: boolean } }[] = [];
+		const m = fakeManager({
+			r4: {
+				background: true,
+				snapshot: {
+					agents: [
+						{ id: 1, label: "explorer", status: "done", model: "litellm/haiku-4.5", tier: "small", tokens: 50 },
+					],
+				},
+			},
+		});
+		installResultDelivery(fakePi(calls), m);
+		(m as unknown as EventEmitter).emit("complete", { runId: "r4", result: RESULT });
+		assert.equal(calls.length, 1);
+		assert.match(calls[0]!.msg.content, /## Workers/);
+		assert.match(calls[0]!.msg.content, /haiku-4\.5/);
+		assert.match(calls[0]!.msg.content, /\| small \|/);
 	});
 });

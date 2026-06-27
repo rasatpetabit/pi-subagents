@@ -149,7 +149,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string; tier?: string; agentType?: string }) => void;
+  onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string; startedAt?: string; tier?: string; agentType?: string; reasoning?: string }) => void;
   onAgentEnd?: (event: {
     label: string;
     phase?: string;
@@ -162,6 +162,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     recoverable?: boolean;
     startedAt?: string;
     endedAt?: string;
+    reasoning?: string;
   }) => void;
   onAgentHistory?: (event: { label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
   onTokenUsage?: (usage: {
@@ -521,6 +522,12 @@ export async function runWorkflow<T = unknown>(
     // spec, else the session's main model. The real resolved id overrides this via
     // onModelResolved once the subagent session is created.
     let displayModel = modelSpec ?? options.mainModel;
+    // Resolved model reasoning/thinking level (e.g. "high", "off"). Set via
+    // onReasoning once the model spec resolves its `:level` suffix; surfaced in
+    // onAgentEnd so the live widget + worker table can show it (onAgentStart fires
+    // before the subagent session resolves the model, so it stays undefined there
+    // and the manager backfills the snapshot on agentEnd).
+    let reasoningLevel: string | undefined;
 
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
@@ -648,6 +655,9 @@ export async function runWorkflow<T = unknown>(
                   onModelResolved: (id: string) => {
                     displayModel = id;
                   },
+                  onReasoning: (level: string) => {
+                    reasoningLevel = level;
+                  },
                   onModelFallback: (spec: string) => {
                     // Make the silent degrade visible in /workflows, not just console.
                     log(`${label}: model "${spec}" unavailable — using the session default`);
@@ -693,6 +703,7 @@ export async function runWorkflow<T = unknown>(
               model: displayModel,
               startedAt,
               endedAt,
+              reasoning: reasoningLevel,
             });
             return result;
           } catch (error) {
@@ -721,6 +732,7 @@ export async function runWorkflow<T = unknown>(
               recoverable: workflowError.recoverable,
               startedAt,
               endedAt: new Date().toISOString(),
+              reasoning: reasoningLevel,
             });
 
             if (workflowError.recoverable) {

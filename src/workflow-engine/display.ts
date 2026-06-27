@@ -26,6 +26,9 @@ export interface WorkflowAgentSnapshot {
   /** Agent type / role label (e.g. "worker", "oracle", "planner"). Set at agentStart.
    * Vendor seam — enhancement-ideas §2. */
   agentType?: string;
+  /** Model reasoning / compute effort when available (workflow workers usually render "-").
+   * Unified alias for the model thinking level (subagent side maps it from `thinking`). */
+  reasoning?: string;
   /** ISO timestamp when this agent originally started. Preserved across resume replay. */
   startedAt?: string;
   /** ISO timestamp when this agent originally ended. Preserved across resume replay. */
@@ -224,10 +227,11 @@ export function renderWorkflowLines(
     for (const agent of visibleAgents) {
       const order = `[${agent.id}]`;
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
+      const meta = agentMetaText(agent, theme);
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
       const errTxt = agentErrorText(agent, theme);
       lines.push(
-        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${meta}${errTxt}${agentTokens}${result}`,
       );
     }
     if (agents.length > visibleAgents.length)
@@ -239,10 +243,11 @@ export function renderWorkflowLines(
     lines.push(theme.fg("accent", "  Unphased"));
     for (const agent of unphased.slice(-maxAgents)) {
       const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
+      const meta = agentMetaText(agent, theme);
       const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
       const errTxt = agentErrorText(agent, theme);
       lines.push(
-        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${errTxt}${agentTokens}${result}`,
+        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${meta}${errTxt}${agentTokens}${result}`,
       );
     }
   }
@@ -311,6 +316,50 @@ export function agentErrorText(agent: { status: string; error?: string }, theme:
   if (agent.status !== "error") return "";
   const text = shorten(firstLine(agent.error), max);
   return text ? theme.fg("error", ` — ${text}`) : "";
+}
+
+/** Inline per-agent model/tier/reasoning metadata for the live workflow widget.
+ * Shows each non-empty axis as `key=value`, joined by ` · `. Returns "" when none
+ * are set so an agent with no routing metadata renders unchanged. Workflow
+ * workers usually have `tier` and `model` but no `reasoning` (the model thinking
+ * level is not surfaced by the workflow engine today). */
+export function agentMetaText(
+  agent: { model?: string; tier?: string; reasoning?: string },
+  theme: ThemeLike,
+): string {
+  const parts: string[] = [];
+  if (agent.model) parts.push(`model=${agent.model}`);
+  if (agent.tier) parts.push(`tier=${agent.tier}`);
+  if (agent.reasoning) parts.push(`reasoning=${agent.reasoning}`);
+  return parts.length ? theme.fg("dim", ` [${parts.join(" · ")}]`) : "";
+}
+
+/** Compact Markdown table of every workflow worker (no maxAgents truncation) for
+ * the tool-result / background-completion message. `tier` is the routing bucket
+ * (small/medium/big), `reasoning` is the model compute-effort level (usually
+ * `-` for workflow workers). Per the enhancement-ideas plan, never label tier as
+ * effort. Cells escape `|`/newlines. */
+export function renderWorkflowWorkerTable(snapshot: WorkflowSnapshot): string {
+  const agents = snapshot.agents ?? [];
+  if (agents.length === 0) return "";
+  const header = ["#", "Status", "Label", "Phase", "Model", "Tier", "Reasoning", "Tokens"];
+  const sep = ["--", "------", "-----", "-----", "-----", "----", "---------", "------"];
+  const rows = agents.map((a) => [
+    String(a.id),
+    a.status,
+    a.label,
+    a.phase ?? "-",
+    a.model ?? "-",
+    a.tier ?? "-",
+    a.reasoning ?? "-",
+    a.tokens ? a.tokens.toLocaleString() : "-",
+  ]);
+  const all = [header, sep, ...rows];
+  return all.map((r) => `| ${r.map(escapeCell).join(" | ")} |`).join("\n");
+}
+
+function escapeCell(value: string): string {
+  return String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
 }
 
 export function preview(value: unknown, max = 80): string {

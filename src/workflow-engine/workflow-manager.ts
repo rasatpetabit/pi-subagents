@@ -498,6 +498,7 @@ export class WorkflowManager extends EventEmitter {
             agent.recoverable = event.recoverable;
             agent.tokens = event.tokens;
             if (event.model) agent.model = event.model;
+            if (event.reasoning) agent.reasoning = event.reasoning;
             if (event.startedAt) agent.startedAt = event.startedAt;
             agent.endedAt = event.endedAt ?? new Date().toISOString();
           }

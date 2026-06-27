@@ -8,6 +8,7 @@ import {
   createWorkflowSnapshot,
   recomputeWorkflowSnapshot,
   renderWorkflowText,
+  renderWorkflowWorkerTable,
   type WorkflowSnapshot,
 } from "./display.ts";
 import { WorkflowError, WorkflowErrorCode } from "./errors.ts";
@@ -320,11 +321,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const formattedResult =
         result.result !== undefined ? `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\`` : "";
 
+      const workers = renderWorkflowWorkerTable(snapshot);
+      const workersSection = workers ? `\n\n## Workers\n\n${workers}` : "";
+
       return {
         content: [
           {
             type: "text",
-            text: `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo}\n\n## Result${formattedResult}`,
+            text: `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo}${workersSection}\n\n## Result${formattedResult}`,
           },
         ],
         details: {
