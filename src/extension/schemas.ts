@@ -36,7 +36,7 @@ const SkillOverride = Type.Unsafe({
 		{ type: "boolean" },
 		{ type: "string" },
 	],
-	description: "Skill name(s) to inject (comma-separated), array of strings, or boolean (false disables, true uses default)",
+	description: "Skill name(s) to make available (comma-separated), array of strings, or boolean (false disables, true uses default)",
 });
 
 const OutputOverride = Type.Unsafe({
@@ -224,11 +224,6 @@ const ChainItem = Type.Object({
 }, {
 	description: "Chain step: use {agent, task?, ...} for sequential, {parallel: [...]} for static concurrent execution, or {expand, parallel: {...}, collect} for dynamic fanout.",
 	additionalProperties: false,
-	allOf: [
-		{ if: { required: ["expand"] }, then: { required: ["parallel", "collect"], properties: { parallel: { type: "object" } } } },
-		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
-		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
-	],
 });
 
 const ControlOverrides = Type.Object({
@@ -282,17 +277,17 @@ const SubagentParamsSchema = Type.Object({
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground execution wall-clock timeout in milliseconds. When it expires, running children are soft-interrupted and timed-out results are returned. Foreground only; async/background runs ignore this field." })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs. Use only one unless both values are identical." })),
 	worktree: Type.Optional(Type.Boolean({
-		description: "Create isolated git worktrees for each parallel task. " +
-			"Prevents filesystem conflicts. Requires clean git state. " +
-			"Per-worktree diffs included in output."
+		description: "Create isolated git worktrees for parallel tasks; requires clean git state."
 	})),
-	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. With action='append-step', provide exactly one step to append to an active async chain; it can use {previous}, {chain_dir}, and existing {outputs.name} references." })),
+	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential steps; each result becomes {previous}. append-step takes one tail step and may use {chain_dir}/{outputs.name}." })),
 	context: Type.Optional(Type.String({
 		enum: ["fresh", "fork"],
-		description: "'fresh' or 'fork' to branch from parent session. If omitted, any requested agent with defaultContext: 'fork' makes the whole invocation forked; otherwise the default is 'fresh'.",
+		description: "'fresh' or 'fork' to branch from parent session. Explicit context overrides every child in the invocation. If omitted, each requested agent uses its own defaultContext; agents without defaultContext: 'fork' run fresh.",
 	})),
-	chainDir: Type.Optional(Type.String({ description: "Persistent directory for chain artifacts. Default: a user-scoped temp directory under <tmpdir>/ (auto-cleaned after 24h)" })),
+	chainDir: Type.Optional(Type.String({ description: "Persistent chain artifact directory; defaults to user-scoped temp storage." })),
 	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
+	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground timeout ms; alias of maxRuntimeMs." })),
+	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias of timeoutMs for foreground timeout." })),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
 	cwd: Type.Optional(Type.String()),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),

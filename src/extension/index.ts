@@ -34,7 +34,7 @@ import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
 import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
-import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import {
@@ -44,6 +44,7 @@ import {
 	DEFAULT_ARTIFACT_CONFIG,
 	RESULTS_DIR,
 	SLASH_RESULT_TYPE,
+	SLASH_TEXT_RESULT_TYPE,
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	SUBAGENT_ASYNC_STARTED_EVENT,
 	SUBAGENT_CONTROL_EVENT,
@@ -105,6 +106,30 @@ function isSlashResultRunning(result: { details?: Details }): boolean {
 	return result.details?.progress?.some((entry) => entry.status === "running")
 		|| result.details?.results.some((entry) => entry.progress?.status === "running")
 		|| false;
+}
+
+// Drives the inline running-indicator braille animation for foreground subagent
+// results. Foreground runs receive progress only on child events, so the glyph
+// (derived from progress fields) would freeze between events. While a result is
+// running we tick a frame counter + invalidate() every 80ms so renderSubagentResult
+// can blend the frame into runningGlyph and produce a smooth spinner.
+function subagentResultIsRunning(result: { details?: Details }): boolean {
+	return result.details?.progress?.some((entry) => entry.status === "running")
+		|| result.details?.results.some((entry) => entry.progress?.status === "running")
+		|| false;
+}
+
+function ensureSubagentResultAnimation(context: { state: Record<string, unknown>; invalidate?: () => void }): void {
+	const state = context.state as { subagentResultAnimationTimer?: ReturnType<typeof setInterval>; frame?: number };
+	if (state.subagentResultAnimationTimer) return;
+	if (typeof context.invalidate !== "function") return;
+	if (state.frame === undefined) state.frame = 0;
+	state.subagentResultAnimationTimer = setInterval(() => {
+		state.frame = ((state.frame ?? 0) + 1) % 10;
+		try {
+			context.invalidate();
+		} catch {}
+	}, 80);
 }
 
 function isSlashResultError(result: { details?: Details }): boolean {
@@ -234,6 +259,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
+		subagentInProgress: false,
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
@@ -286,6 +312,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
 		return createSlashResultComponent(details, options, theme);
+	});
+
+	pi.registerMessageRenderer<undefined>(SLASH_TEXT_RESULT_TYPE, (message, _options, _theme) => {
+		const content = typeof message.content === "string"
+			? message.content
+			: message.content
+				.filter((entry) => entry.type === "text")
+				.map((entry) => entry.text)
+				.join("\n");
+		return new Text(content, 0, 0);
 	});
 
 	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
@@ -394,7 +430,7 @@ EXECUTION (use exactly ONE mode):
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
 • Foreground timeout: { timeoutMs } or { maxRuntimeMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Not for async/background runs.
-• Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
+• Optional context: { context: "fresh" | "fork" } (explicit value overrides every child; when omitted, each requested agent uses its own defaultContext, otherwise "fresh"; inspect agent defaults via { action: "list" })
 • Goal-style requests: when the user says “/goal”, “goal”, “active goal”, “work until evidence says done”, or “verify against a goal”, model that as explicit acceptance. Use acceptance.criteria for the target, acceptance.evidence/verify for proof, acceptance.stopRules for constraints, and acceptance.maxFinalizationTurns for the bounded loop.
 • Plan/spec implementation handoffs: when delegating a plan, PRD, spec, issue, or broad fix to an editing-capable child, prefer structured acceptance instead of burying validation requirements in task prose. Put the implementation instructions and plan paths in task; put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.
 • If { action: "list" } shows proactive skill subagent suggestions, consider a small fresh-context fanout for broad tasks where one of those skills would materially help
@@ -409,6 +445,9 @@ Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", t
 MANAGEMENT (use action field, omit agent/task/chain/tasks):
 • { action: "list" } - discover executable agents/chains
 • { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
+• { action: "models", agent?: "name" } - show the runtime-loaded builtin subagent model mapping, optionally filtered to one builtin
+• { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, ... } }
+• { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
 • { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, maxExecutionTimeMs, maxTokens, ... } }
 • { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", maxExecutionTimeMs, maxTokens, ... } } - merge
 • { action: "delete", agent: "code-analysis.custom-agent" }
@@ -459,8 +498,13 @@ DIAGNOSTICS:
 		},
 
 		renderResult(result, options, theme, context) {
-			clearLegacyResultAnimationTimer(context);
-			return renderSubagentResult(result, options, theme);
+			if (subagentResultIsRunning(result)) {
+				ensureSubagentResultAnimation(context);
+			} else {
+				clearLegacyResultAnimationTimer(context);
+			}
+			const frame = (context.state as { frame?: number } | undefined)?.frame ?? 0;
+			return renderSubagentResult(result, options, theme, frame);
 		},
 
 	};
@@ -539,6 +583,17 @@ DIAGNOSTICS:
 	const resetSessionState = (ctx: ExtensionContext) => {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+		// Set PI_SUBAGENT_PARENT_SESSION for permission-system forwarding.
+		// Only set in the root session (the interactive UI session), not in
+		// child subagent processes — children inherit the parent's value
+		// through the process environment at spawn time and must not overwrite
+		// it with their own session identity.
+		if (!process.env[SUBAGENT_CHILD_ENV]) {
+			const sessionId = ctx.sessionManager.getSessionId();
+			if (sessionId) {
+				process.env[SUBAGENT_PARENT_SESSION_ENV] = sessionId;
+			}
+		}
 		state.lastUiContext = ctx;
 		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
@@ -552,6 +607,7 @@ DIAGNOSTICS:
 	});
 
 	pi.on("session_shutdown", () => {
+		delete process.env[SUBAGENT_PARENT_SESSION_ENV];
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
 				unsubscribe();

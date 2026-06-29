@@ -3,5 +3,5 @@
 AGENTS.md
 node_modules/
 .fallow/
-
-package-lock.json
+.serena/
+.worktrees/

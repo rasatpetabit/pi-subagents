@@ -83,7 +83,61 @@ If a natural-language request clearly matches a shortcut, apply the same pattern
 
 ## Minimal Invocation Patterns
 
-Single child:
+Avoid carrying over old prompt habits that over-specify every step. Use `must`, `always`, and `never` for real invariants; for judgment calls, give decision rules. For example, tell a reviewer to inspect the staged diff directly and report only evidence-backed findings, rather than prescribing every file or command. Tell a researcher the retrieval budget: start with broad targeted searches, fetch only the strongest sources, search again only when a required fact is missing, then stop.
+
+For implementation handoffs, name the approved scope and success criteria more clearly than the process. Good prompts say what to change, what not to change, where the evidence lives, how to validate, and when to escalate. They should not ask the child to create another subagent plan or continue the parent conversation.
+
+Settings locations:
+- User scope: `~/.pi/agent/settings.json`
+- Project scope: `.pi/settings.json`
+
+Direct settings example:
+
+```json
+{
+  "subagents": {
+    "agentOverrides": {
+      "reviewer": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "high",
+        "fallbackModels": ["openai/gpt-5-mini"]
+      }
+    }
+  }
+}
+```
+
+Useful override fields: `model`, `fallbackModels`, `thinking`,
+`systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`,
+`disabled`, `skills`, `tools`, and `systemPrompt`. Create a user or project
+agent with the same name only when you want a substantially different agent.
+
+If a provider rejects model IDs with thinking suffixes, use
+`subagents.disableThinking: true` in user or project settings to clear bundled
+builtin thinking defaults globally. A higher-precedence per-agent `thinking`
+override can opt one builtin back in.
+
+## Discovery and Scope Rules
+
+Agent files can live in:
+- `~/.pi/agent/agents/**/*.md` — user scope
+- `.pi/agents/**/*.md` — canonical project scope
+- legacy `.agents/**/*.md` — still read for compatibility, but `.pi/agents/` wins on conflicts
+
+Chains live in:
+- `~/.pi/agent/chains/**/*.chain.md` and `~/.pi/agent/chains/**/*.chain.json` — user scope
+- `.pi/chains/**/*.chain.md` and `.pi/chains/**/*.chain.json` — project scope
+
+Discovery is recursive. `.chain.md` files do not define agents. Use `.chain.md` for simple saved chains and `.chain.json` for dynamic fanout or inline schema objects. Agents and chains can set optional frontmatter/package metadata; `name: scout` plus `package: code-analysis` registers as runtime name `code-analysis.scout` while serialization keeps `name` and `package` separate.
+
+Precedence is by parsed runtime name:
+1. project scope
+2. user scope
+3. builtin agents
+
+## Running Subagents
+
+### Single agent
 
 ```typescript
 subagent({ agent: "oracle", task: "Review current direction and challenge assumptions.", async: true })
