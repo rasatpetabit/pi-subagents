@@ -581,7 +581,7 @@ function appendStepToAsyncChain(input: {
 
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const agents = input.deps.discoverAgents(input.requestCwd, scope).agents;
-	const contextPolicy = resolveExplicitContextPolicy(input.params);
+	const contextPolicy = resolveAgentDefaultContextPolicy(input.params, agents);
 	const chainSkillInput = normalizeSkillInput(input.params.skill);
 	const chainSkills = chainSkillInput === false ? [] : (chainSkillInput ?? []);
 	const asyncCtx = {

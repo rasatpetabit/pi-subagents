@@ -992,7 +992,7 @@ async function runSingleAttempt(
 			? `${timeoutMessage}\n\nPartial output before timeout:\n${fullOutput}`
 			: timeoutMessage;
 	}
-	const completionGuard = result.exitCode === 0 && !result.error && agent.completionGuard !== false
+	const completionGuard = result.exitCode === 0 && !result.error && agent.completionGuard !== false && shared.completionPolicy !== "acceptance-contract"
 		? evaluateCompletionMutationGuard({
 			agent: agent.name,
 			task: shared.originalTask ?? task,
