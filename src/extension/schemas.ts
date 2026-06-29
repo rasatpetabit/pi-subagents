@@ -121,7 +121,7 @@ const AcceptanceOverride = Type.Unsafe({
 		maxFinalizationTurns: { type: "integer", minimum: 1, maximum: 10 },
 	},
 	additionalProperties: false,
-	description: "Optional acceptance contract. Use this for goal-style requests and for implementation handoffs from plans, PRDs, specs, issues, or broad fixes. Put implementation instructions and plan paths in task; put the definition of done in criteria, proof in evidence/verify, constraints in stopRules, and the bounded loop budget in maxFinalizationTurns. Runtime validation still requires at least one of criteria, evidence, verify, review, or stopRules. When present, the child must complete a same-session self-review/repair loop before acceptance is evaluated.",
+	description: "Optional acceptance contract (object with criteria, evidence, verify, review, stopRules, maxFinalizationTurns). Requires at least one of criteria, evidence, verify, review, or stopRules. Triggers a same-session self-review/repair loop before evaluation.",
 });
 
 const TaskItem = Type.Object({
@@ -270,7 +270,7 @@ const SubagentParamsSchema = Type.Object({
 			{ type: "object", additionalProperties: true },
 			{ type: "string" },
 		],
-		description: "Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), subagentOnlyExtensions (comma-separated child-only extension paths), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON."
+		description: "Agent/chain config for create/update. Object or JSON string; presence of steps creates a chain. Agent fields: name, package, description, scope, systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, model, tools, extensions, subagentOnlyExtensions, skills, thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens."
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
@@ -286,8 +286,6 @@ const SubagentParamsSchema = Type.Object({
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Persistent chain artifact directory; defaults to user-scoped temp storage." })),
 	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground timeout ms; alias of maxRuntimeMs." })),
-	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias of timeoutMs for foreground timeout." })),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
 	cwd: Type.Optional(Type.String()),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
