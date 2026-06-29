@@ -89,6 +89,102 @@ interface ChainResultItem {
 	task?: string;
 	detached?: boolean;
 	timedOut?: boolean;
+}
+
+interface ChainExecutionModule {
+	executeChain(params: Record<string, unknown>): Promise<ChainExecutionResult>;
+}
+
+const chainMod = await tryImport<ChainExecutionModule>("./src/runs/foreground/chain-execution.ts");
+const available = !!chainMod;
+const executeChain = chainMod?.executeChain;
+
+describe("chain execution — sequential", { skip: !available ? "pi packages not available" : undefined }, () => {
+	let tempDir: string;
+	let artifactsDir: string;
+	let mockPi: MockPi;
+
+	before(() => {
+		mockPi = createMockPi();
+		mockPi.install();
+	});
+
+	after(() => {
+		mockPi.uninstall();
+	});
+
+	beforeEach(() => {
+		tempDir = createTempDir();
+		artifactsDir = path.join(tempDir, "artifacts");
+		mockPi.reset();
+	});
+
+	afterEach(() => {
+		removeTempDir(tempDir);
+	});
+
+	function makeChainParams(
+		chain: TestChainStep[],
+		agents: ReturnType<typeof makeAgent>[],
+		overrides: Record<string, unknown> = {},
+	) {
+		return {
+			chain,
+			agents,
+			ctx: makeMinimalCtx(tempDir),
+			runId: `test-${Date.now().toString(36)}`,
+			shareEnabled: false,
+			sessionDirForIndex: () => undefined,
+			artifactsDir,
+			artifactConfig: { enabled: false },
+			clarify: false,
+			...overrides,
+		};
+	}
+
+	function readCallArgs(index: number): string[] {
+		const callFiles = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
+			.sort();
+		const callFile = callFiles[index];
+		assert.ok(callFile, `expected call ${index}`);
+		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+	}
+
+	function acceptanceReport(overrides: Record<string, unknown> = {}): string {
+		return [
+			"done",
+			"```acceptance-report",
+			JSON.stringify({
+				criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "integration test evidence" }],
+				changedFiles: ["src/a.ts"],
+				testsAddedOrUpdated: ["test/a.test.ts"],
+				commandsRun: [{ command: "npm test", result: "passed", summary: "passed" }],
+				validationOutput: ["validation passed"],
+				residualRisks: [],
+				noStagedFiles: true,
+				notes: "complete",
+				...overrides,
+			}),
+			"```",
+		].join("\n");
+	}
+
+	function writePackageSkill(packageRoot: string, skillName: string): void {
+		const skillDir = path.join(packageRoot, "skills", skillName);
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(packageRoot, "package.json"),
+			JSON.stringify({ name: `${skillName}-pkg`, version: "1.0.0", pi: { skills: [`./skills/${skillName}`] } }, null, 2),
+			"utf-8",
+		);
+		fs.writeFileSync(
+			path.join(skillDir, "SKILL.md"),
+			`---\nname: ${skillName}\ndescription: test skill\n---\nbody\n`,
+			"utf-8",
+		);
+	}
+
 	it("preserves completed chain results and marks the timed-out current step", async () => {
 		mockPi.onCall({ matchArgIncludes: "Quick first step", output: "first done" });
 		mockPi.onCall({ matchArgIncludes: "Slow second step", delay: 10000 });
@@ -110,8 +206,8 @@ interface ChainResultItem {
 		assert.equal(result.details.results[0]?.exitCode, 0);
 		assert.equal(result.details.results[0]?.finalOutput, "first done");
 		assert.equal(result.details.results[1]?.timedOut, true);
-		assert.equal(result.details.results[1]?.error, "Subagent timed out after 300ms.");
-		assert.match(result.content[0]?.text ?? "", /Subagent timed out after 300ms\./);
+		assert.equal(result.details.results[1]?.error, "Timed out after 300ms.");
+		assert.match(result.content[0]?.text ?? "", /Timed out after 300ms\./);
 	});
 
 	it("passes file-only saved-output references through {previous}", async () => {

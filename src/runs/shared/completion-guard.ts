@@ -83,6 +83,7 @@ interface CompletionMutationGuardInput {
 	messages: Message[];
 	tools?: string[];
 	mcpDirectTools?: string[];
+	usesAcceptanceContract?: boolean;
 }
 
 interface CompletionMutationGuardResult {
@@ -157,7 +158,7 @@ export function evaluateCompletionMutationGuard(input: CompletionMutationGuardIn
 		agent: input.agent,
 		task: input.task,
 		completionGuardEnabled: true,
-		usesAcceptanceContract: false,
+		usesAcceptanceContract: input.usesAcceptanceContract ?? false,
 		tools: input.tools,
 		mcpDirectTools: input.mcpDirectTools,
 	}) === "mutation-guard";

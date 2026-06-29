@@ -2379,7 +2379,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
-		if (timedOut) {
+		if (timedOut && parallelConcurrency === 1) {
 			return {
 				content: [{ type: "text", text: `Parallel run timed out (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
 				details,

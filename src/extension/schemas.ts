@@ -104,24 +104,8 @@ const AcceptanceReviewGateSchema = Type.Object({
 
 const AcceptanceOverride = Type.Unsafe({
 	type: "object",
-	properties: {
-		criteria: {
-			type: "array",
-			items: {
-				anyOf: [
-					{ type: "string" },
-					AcceptanceGateSchema,
-				],
-			},
-		},
-		evidence: { type: "array", items: AcceptanceEvidenceKind },
-		verify: { type: "array", items: AcceptanceVerifyCommandSchema },
-		review: AcceptanceReviewGateSchema,
-		stopRules: { type: "array", items: { type: "string" } },
-		maxFinalizationTurns: { type: "integer", minimum: 1, maximum: 10 },
-	},
-	additionalProperties: false,
-	description: "Optional acceptance contract (object with criteria, evidence, verify, review, stopRules, maxFinalizationTurns). Requires at least one of criteria, evidence, verify, review, or stopRules. Triggers a same-session self-review/repair loop before evaluation.",
+	additionalProperties: true,
+	description: "Optional acceptance contract. Object with criteria, evidence, verify, review, stopRules, maxFinalizationTurns. Runtime validates the structure; triggers a same-session self-review loop.",
 });
 
 const TaskItem = Type.Object({

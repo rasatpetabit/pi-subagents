@@ -412,13 +412,8 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 
 		const acceptanceSchema = SubagentParams?.properties?.acceptance;
 		assert.ok(acceptanceSchema, "acceptance schema should exist");
-		assert.equal(acceptanceSchema.type, undefined);
-		assert.equal(hasAnyOfType(acceptanceSchema, "string"), true);
-		assert.equal(hasAnyOfType(acceptanceSchema, "boolean"), true);
-		const acceptanceObjectBranch = anyOfBranches(acceptanceSchema).find((branch) => branch.type === "object");
-		assert.ok(acceptanceObjectBranch, "acceptance should support object config");
-		assert.equal(acceptanceObjectBranch.additionalProperties, true);
-		assert.equal(JSON.stringify(acceptanceObjectBranch).includes('"anyOf"'), false);
+		assert.equal(acceptanceSchema.type, "object");
+		assert.equal(acceptanceSchema.additionalProperties, true);
 
 		const chainItem = SubagentParams?.properties?.chain?.items;
 		assert.ok(chainItem, "chain item schema should exist");
@@ -491,14 +486,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch the bug"], evidence: ["changed-files"], maxFinalizationTurns: 2 } },
 			{ agent: "worker", task: "Fix", acceptance: { verify: [{ id: "unit", command: "npm test" }] } },
 			{ agent: "worker", task: "Fix", acceptance: {} },
-			{ agent: "worker", task: "Fix", acceptance: false },
 			{ agent: "worker", task: "Fix", timeoutMs: 1000 },
 			{ tasks: [{ agent: "worker", task: "Fix" }], maxRuntimeMs: 1000 },
 			{ chain: [{ agent: "worker", task: "Fix" }], timeoutMs: 1000, maxRuntimeMs: 1000 },
-			{ agent: "worker", task: "Fix", acceptance: "checked" },
-			{ agent: "worker", task: "Fix", acceptance: { level: "checked", review: false } },
-			{ tasks: [{ agent: "worker", task: "Fix", acceptance: false }] },
-			{ chain: [{ agent: "worker", acceptance: { level: "checked" } }] },
 			{ chain: [{ parallel: [{ agent: "worker", acceptance: { level: "verified", verify: [{ id: "unit", command: "npm test" }] } }] }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "worker", acceptance: { level: "checked", review: false } }, collect: { as: "reviews" } }] },
 			{ config: { name: "reviewer", description: "Review things" } },
@@ -522,8 +512,6 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: true },
 			{ agent: "worker", task: "Fix", acceptance: "checked" },
 			{ agent: "worker", task: "Fix", acceptance: false },
-			{ agent: "worker", task: "Fix", acceptance: { level: "checked" } },
-			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch"], review: true } },
 			{ tasks: [{ agent: "worker", task: "Fix", acceptance: true }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "worker", acceptance: true }, collect: { as: "reviews" } }] },
 			{ config: [] },

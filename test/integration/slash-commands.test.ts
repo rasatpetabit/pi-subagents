@@ -629,7 +629,6 @@ Review {previous}
 						agent: "worker",
 						task: "Implement fix",
 						acceptance: {
-							level: "verified",
 							verify: [{ id: "tests", command: "npm test" }],
 						},
 					},
@@ -638,7 +637,6 @@ Review {previous}
 
 			const { params } = await captureSlashCommandParams("run-chain", "verified-flow -- Audit", root);
 			assert.deepEqual((params as { chain?: Array<{ acceptance?: unknown }> }).chain?.[0]?.acceptance, {
-				level: "verified",
 				verify: [{ id: "tests", command: "npm test" }],
 			});
 		});
