@@ -96,6 +96,23 @@ export function resolveSubagentIntercomTarget(runId: string, agent: string, inde
 	return `subagent-${sanitizeIntercomTargetPart(agent)}-${sanitizeIntercomTargetPart(runId)}${stepSuffix}`;
 }
 
+/**
+ * Creates a memoized target resolver for a single run.
+ * Repeated calls with the same `(agent, index)` arguments within the run
+ * return the cached target string instead of re-deriving it.
+ */
+export function createTargetResolver(runId: string): (agent: string, index?: number) => string {
+	const cache = new Map<string, string>();
+	return (agent: string, index?: number): string => {
+		const key = JSON.stringify([agent, index]);
+		const cached = cache.get(key);
+		if (cached !== undefined) return cached;
+		const target = resolveSubagentIntercomTarget(runId, agent, index);
+		cache.set(key, target);
+		return target;
+	};
+}
+
 export function resolveIntercomBridgeMode(value: unknown): IntercomBridgeMode {
 	if (value === "off" || value === "always" || value === "fork-only") return value;
 	return "always";
@@ -295,7 +312,7 @@ function resolveInstructionTemplate(instructionFile: string, settingsDir: string
 	}
 }
 
-function buildIntercomBridgeInstruction(orchestratorTarget: string, template: string): string {
+export function buildIntercomBridgeInstruction(orchestratorTarget: string, template: string): string {
 	const instruction = template.replaceAll("{orchestratorTarget}", orchestratorTarget).trim();
 	if (instruction.startsWith(INTERCOM_BRIDGE_MARKER)) return instruction;
 	return `${INTERCOM_BRIDGE_MARKER}

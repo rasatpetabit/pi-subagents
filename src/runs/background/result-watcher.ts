@@ -11,9 +11,8 @@ import {
 } from "../../shared/types.ts";
 import {
 	attachNestedChildrenToResultChildren,
-	buildSubagentResultIntercomPayload,
 	compactNestedResultChildren,
-	deliverSubagentResultIntercomEvent,
+	deliverSubagentResultGrouped,
 	resolveSubagentResultStatus,
 } from "../../intercom/result-intercom.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
@@ -176,17 +175,19 @@ export function createResultWatcher(
 				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
 					? data.mode
 					: resultChildren.length > 1 ? "chain" : "single";
-				const payload = buildSubagentResultIntercomPayload({
-					to: intercomTarget,
-					runId,
-					mode,
-					source: "async",
-					children: normalizedChildren,
-					asyncId: data.id,
-					asyncDir: data.asyncDir,
-				});
-				const delivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!delivered) {
+				const payload = await deliverSubagentResultGrouped(
+					pi.events,
+					{
+						to: intercomTarget,
+						runId,
+						mode,
+						source: "async",
+						children: normalizedChildren,
+						asyncId: data.id,
+						asyncDir: data.asyncDir,
+					},
+				);
+				if (!payload) {
 					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
 				}
 			}

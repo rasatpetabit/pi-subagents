@@ -37,7 +37,7 @@ import { ChainOutputValidationError, validateChainOutputBindingsWithContext } fr
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
 import { createForkContextResolver } from "../../shared/fork-context.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
-import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
+import { applyIntercomBridgeToAgent, createTargetResolver, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
@@ -45,7 +45,7 @@ import {
 	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
 	deliverSubagentIntercomMessageEvent,
-	deliverSubagentResultIntercomEvent,
+	deliverSubagentResultGrouped,
 	formatSubagentResultReceipt,
 	resolveSubagentResultStatus,
 	stripDetailsOutputsForIntercomReceipt,
@@ -935,7 +935,7 @@ async function resumeAsyncRun(input: {
 			worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
 			controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 			controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
-			childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
+			childIntercomTarget: intercomBridge.active ? createTargetResolver(runId) : undefined,
 		});
 		if (result.isError) return result;
 		const attachedId = result.details.asyncId ?? runId;
@@ -976,7 +976,7 @@ async function resumeAsyncRun(input: {
 		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
-		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
+		childIntercomTarget: intercomBridge.active ? createTargetResolver(runId) : undefined,
 		availableModels,
 	});
 	if (result.isError) return result;
@@ -1051,16 +1051,18 @@ async function emitForegroundResultIntercom(input: {
 		intercomTarget: resolveSubagentIntercomTarget(input.runId, result.agent, index),
 	}]);
 	if (children.length === 0) return null;
-	const payload = buildSubagentResultIntercomPayload({
-		to: input.intercomBridge.orchestratorTarget,
-		runId: input.runId,
-		mode: input.mode,
-		source: "foreground",
-		children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
-		...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
-	});
-	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
-	if (!delivered) return null;
+	const payload = await deliverSubagentResultGrouped(
+		input.pi.events,
+		{
+			to: input.intercomBridge.orchestratorTarget,
+			runId: input.runId,
+			mode: input.mode,
+			source: "foreground",
+			children: attachNestedChildrenToResultChildren(input.runId, children, input.nestedChildren),
+			...(typeof input.chainSteps === "number" ? { chainSteps: input.chainSteps } : {}),
+		},
+	);
+	if (!payload) return null;
 	return payload;
 }
 

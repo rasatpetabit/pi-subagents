@@ -159,4 +159,55 @@ describe("buildDoctorReport", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("reports active intercom bridge when pi-intercom extension is available", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-bridge-active-"));
+		try {
+			const extensionDir = path.join(root, "pi-intercom");
+			fs.mkdirSync(extensionDir, { recursive: true });
+			const report = buildDoctorReport({
+				cwd: root,
+				config: { intercomBridge: { mode: "always" } },
+				state: makeState(root),
+				currentSessionId: "session-xyz",
+				orchestratorTarget: "subagent-chat-xyz",
+				paths: {
+					tempRootDir: root,
+					asyncDir: path.join(root, "async"),
+					resultsDir: path.join(root, "results"),
+					chainRunsDir: path.join(root, "chains"),
+				},
+				deps: {
+					isAsyncAvailable: () => true,
+					discoverAgentsAll: () => ({
+						builtin: [],
+						user: [],
+						project: [],
+						chains: [],
+						userDir: root,
+						projectDir: root,
+						userChainDir: root,
+						projectChainDir: root,
+						userSettingsPath: path.join(root, "settings.json"),
+						projectSettingsPath: path.join(root, "project-settings.json"),
+					}),
+					discoverAvailableSkills: () => [],
+					diagnoseIntercomBridge: () => ({
+						active: true,
+						mode: "always",
+						wantsIntercom: true,
+						piIntercomAvailable: true,
+						extensionDir,
+						orchestratorTarget: "subagent-chat-xyz",
+						intercomConfigEnabled: true,
+					}),
+				},
+			});
+
+			assert.match(report, /- bridge: active/);
+			assert.match(report, /- pi-intercom: available/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

@@ -80,7 +80,7 @@ import {
 } from "../shared/worktree.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { createTargetResolver } from "../../intercom/intercom-bridge.ts";
 import {
 	acceptanceFailureMessage,
 	acceptanceSelfReviewConfig,
@@ -1412,7 +1412,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		mutatingFailureStates.push(...Array.from({ length: added.addedFlatSteps }, () => createMutatingFailureState()));
 		pendingToolResults.push(...Array.from({ length: added.addedFlatSteps }, () => undefined));
 		if (config.childIntercomTargets) {
-			config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
+			const targetResolver = createTargetResolver(id);
+			config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => targetResolver(statusStep.agent, index));
 		}
 		writeStatusPayload();
 		for (const request of requests) {
@@ -1808,7 +1809,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				}));
 			statusPayload.steps.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps);
 			if (config.childIntercomTargets) {
-				config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
+				const targetResolver = createTargetResolver(id);
+				config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => targetResolver(statusStep.agent, index));
 			}
 			mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
 			pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));

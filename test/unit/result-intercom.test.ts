@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import {
 	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
+	deliverSubagentResultGrouped,
 	formatSubagentResultReceipt,
 	resolveSubagentResultStatus,
 	stripDetailsOutputsForIntercomReceipt,
@@ -223,5 +224,68 @@ describe("result intercom formatter", () => {
 		assert.equal(resolveSubagentResultStatus({ timedOut: true }), "timed-out");
 		assert.equal(resolveSubagentResultStatus({ success: true }), "completed");
 		assert.equal(resolveSubagentResultStatus({ exitCode: 1 }), "failed");
+	});
+});
+
+describe("deliverSubagentResultGrouped", () => {
+	it("returns payload when delivery is acknowledged", async () => {
+		const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
+		const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+
+		const listeners: Record<string, Array<(data: unknown) => void>> = {};
+		let emittedRequestId: string | undefined;
+
+		const events = {
+			on: (event: string, fn: (data: unknown) => void) => {
+				if (!listeners[event]) listeners[event] = [];
+				listeners[event].push(fn);
+				return () => {};
+			},
+			emit: (event: string, data: unknown) => {
+				if (event === SUBAGENT_RESULT_INTERCOM_EVENT && typeof data === "object") {
+					emittedRequestId = (data as { requestId?: string }).requestId;
+				}
+				// Simulate delivery acknowledgment from intercom listener
+				if (event === SUBAGENT_RESULT_INTERCOM_EVENT) {
+					for (const deliveryFn of listeners[SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT] ?? []) {
+						deliveryFn({ requestId: (data as { requestId?: string }).requestId, delivered: true });
+					}
+				}
+			},
+		};
+
+		const payload = await deliverSubagentResultGrouped(events as any, {
+			to: "target",
+			runId: "run-123",
+			mode: "single",
+			source: "foreground",
+			children: [
+				{ agent: "worker", status: "completed", summary: "done" },
+			],
+		});
+
+		assert.ok(payload);
+		assert.equal(payload.status, "completed");
+		assert.equal(payload.summary, "1 completed");
+	});
+
+	it("returns null when delivery is not acknowledged (timeout)", async () => {
+		const events = {
+			on: () => () => {},
+			emit: () => {},
+			// No delivery event emitted — simulates timeout
+		};
+
+		const payload = await deliverSubagentResultGrouped(events as any, {
+			to: "target",
+			runId: "run-456",
+			mode: "parallel",
+			source: "foreground",
+			children: [
+				{ agent: "worker", status: "completed", summary: "done" },
+			],
+		});
+
+		assert.equal(payload, null);
 	});
 });

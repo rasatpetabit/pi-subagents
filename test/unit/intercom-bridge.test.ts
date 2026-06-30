@@ -6,11 +6,14 @@ import { describe, it } from "node:test";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import {
 	applyIntercomBridgeToAgent,
+	buildIntercomBridgeInstruction,
 	diagnoseIntercomBridge,
+	INTERCOM_BRIDGE_MARKER,
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 	resolveSubagentIntercomTarget,
 	resolveIntercomBridgeMode,
+	createTargetResolver,
 	type IntercomBridgeState,
 } from "../../src/intercom/intercom-bridge.ts";
 
@@ -352,5 +355,53 @@ describe("applyIntercomBridgeToAgent", () => {
 		const agent = makeAgent({ tools: ["read"], extensions: ["/tmp/not-pi-intercom/index.ts"] });
 		const updated = applyIntercomBridgeToAgent(agent, activeBridge);
 		assert.equal(updated, agent);
+	});
+});
+
+describe("buildIntercomBridgeInstruction", () => {
+	it("substitutes {orchestratorTarget} with the given target", () => {
+		const instruction = buildIntercomBridgeInstruction("orchestrator-main", "{orchestratorTarget}");
+		assert.ok(instruction.includes("orchestrator-main"));
+		assert.ok(!instruction.includes("{orchestratorTarget}"));
+	});
+
+	it("prefixes with INTERCOM_BRIDGE_MARKER when not already present", () => {
+		const instruction = buildIntercomBridgeInstruction("target", "Some plain text");
+		assert.ok(instruction.startsWith(INTERCOM_BRIDGE_MARKER));
+		assert.ok(instruction.includes("Some plain text"));
+	});
+
+	it("passes through instructions that already start with the marker", () => {
+		const preformatted = `${INTERCOM_BRIDGE_MARKER}\nAlready formatted content.`;
+		const instruction = buildIntercomBridgeInstruction("target", preformatted);
+		assert.equal(instruction, preformatted);
+	});
+});
+
+describe("createTargetResolver", () => {
+	it("returns the same target for repeated calls with same args", () => {
+		const resolver = createTargetResolver("run-abc");
+		const a = resolver("worker", 0);
+		const b = resolver("worker", 0);
+		assert.equal(a, b);
+		assert.equal(a, "subagent-worker-run-abc-1");
+	});
+
+	it("returns different targets for different agents", () => {
+		const resolver = createTargetResolver("run-abc");
+		assert.notEqual(resolver("reviewer", 0), resolver("writer", 0));
+	});
+
+	it("omits index suffix when index is undefined", () => {
+		const resolver = createTargetResolver("run-abc");
+		const target = resolver("worker");
+		assert.equal(target, "subagent-worker-run-abc");
+	});
+
+	it("avoids cache key collisions when agent name contains colon", () => {
+		const resolver = createTargetResolver("run-abc");
+		const a = resolver("a:1", 0);       // agent="a:1", index=0
+		const b = resolver("a", 1);         // agent="a", index=1
+		assert.ok(a !== b, "targets for (a:1, 0) and (a, 1) must differ");
 	});
 });

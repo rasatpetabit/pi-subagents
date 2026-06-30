@@ -380,3 +380,22 @@ export function formatSubagentResultReceipt(input: {
 	lines.push("Full grouped output was sent over intercom.");
 	return lines.join("\n");
 }
+
+/**
+ * Combined payload-building + delivery for grouped subagent results.
+ * Shorthand for `buildSubagentResultIntercomPayload(input)` followed by
+ * `deliverSubagentResultIntercomEvent(events, payload)`.
+ *
+ * Returns the payload when delivery succeeds, or `null` when the event bus
+ * does not acknowledge within the timeout.
+ */
+export async function deliverSubagentResultGrouped(
+	events: IntercomEventBus,
+	input: GroupedResultIntercomMessageInput,
+	timeoutMs = 500,
+): Promise<SubagentResultIntercomPayload | null> {
+	const payload = buildSubagentResultIntercomPayload(input);
+	const delivered = await deliverSubagentResultIntercomEvent(events, payload, timeoutMs);
+	if (!delivered) return null;
+	return payload;
+}
