@@ -1,15 +1,43 @@
 /**
  * Subagent completion notifications.
+ *
+ * Originator scoping (WS-B): a generic `triggerTurn` notify is fired only by the
+ * session that *launched* the run (the originator). Other sessions watching the
+ * shared results dir do not fire a turn for runs they did not launch, which
+ * stops idle sessions from being flooded with `Background task completed` turns.
+ *
+ * Ownership signal (durable, primary): `result.sessionId` — subagent-runner
+ * writes `config.sessionId` into the result file, and `config.sessionId` is the
+ * launching session's `currentSessionId` (= `resolveCurrentSessionId(sessionManager)`).
+ * This is present for every run, including intercom-disabled installs, so it does
+ * not regress the legacy inline-completion behavior.
+ *
+ * Secondary signal: `result.intercomTarget` (= `config.controlIntercomTarget`,
+ * the launching session's intercom target), present when intercom is active.
+ * Used as a fallback when `sessionId` is absent on legacy result files.
+ *
+ * Non-originators send nothing by default (a followUp message still writes a
+ * visible transcript row, which is the flooding we are eliminating). The
+ * `completionNotify` and `unknownOwner` config knobs preserve the legacy
+ * broadcast for operators who want it.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "./completion-dedupe.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
 
-interface ChainStepResult {
-	agent: string;
-	output: string;
-	success: boolean;
+export type CompletionNotifyMode = "originator" | "all" | "off";
+export type UnknownOwnerMode = "trigger" | "drop";
+
+export interface SubagentNotifyConfig {
+	/** Who gets a `triggerTurn` inline completion notify. Default "originator". */
+	completionNotify?: CompletionNotifyMode;
+	/**
+	 * What to do for a legacy/edge result that lacks any usable owner signal
+	 * (no `sessionId` AND no `intercomTarget`). Default "drop" (do nothing).
+	 * "trigger" preserves the legacy broadcast for results with no owner attribution.
+	 */
+	unknownOwner?: UnknownOwnerMode;
 }
 
 export interface SubagentNotifyDetails {
@@ -20,6 +48,12 @@ export interface SubagentNotifyDetails {
 	durationMs?: number;
 	sessionLabel?: string;
 	sessionValue?: string;
+}
+
+interface ChainStepResult {
+	agent: string;
+	output: string;
+	success: boolean;
 }
 
 interface SubagentResult {
@@ -38,9 +72,34 @@ interface SubagentResult {
 	results?: ChainStepResult[];
 	taskIndex?: number;
 	totalTasks?: number;
+	/** Durable originator runtime session id (written by subagent-runner). */
+	sessionId?: string;
+	/** Durable originator intercom target, present when intercom is active. */
+	intercomTarget?: string;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): void {
+/**
+ * Resolve this session's own identity, for originator comparison.
+ * Returns undefined if identity is not yet known (e.g. before session_start).
+ */
+export type OwnIdentityResolver = () => string | undefined;
+
+export interface RegisterSubagentNotifyOptions {
+	/** Resolve this session's own runtime session id. Required for originator scoping. */
+	getOwnSessionId: OwnIdentityResolver;
+	/** Resolve this session's own intercom target (secondary signal). */
+	getOwnIntercomTarget: OwnIdentityResolver;
+	/** Notify policy. Defaults to { completionNotify: "originator", unknownOwner: "drop" }. */
+	config?: SubagentNotifyConfig;
+}
+
+export default function registerSubagentNotify(
+	pi: ExtensionAPI,
+	options: RegisterSubagentNotifyOptions,
+): void {
+	const completionNotify = options.config?.completionNotify ?? "originator";
+	const unknownOwner = options.config?.unknownOwner ?? "drop";
+
 	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
 	const globalStore = globalThis as Record<string, unknown>;
 	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
@@ -94,14 +153,47 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 			.filter((line) => line !== undefined)
 			.join("\n");
 
-		pi.sendMessage(
-			{
-				customType: "subagent-notify",
-				content,
-				display: true,
-			},
-			{ triggerTurn: true },
-		);
+		const trigger = () =>
+			pi.sendMessage(
+				{ customType: "subagent-notify", content, display: true },
+				{ triggerTurn: true },
+			);
+
+		// --- Decision order (WS-B) ---
+		if (completionNotify === "off") return;
+		if (completionNotify === "all") {
+			trigger(); // legacy broadcast: every session fires the inline notify
+			return;
+		}
+
+		// completionNotify === "originator" (default)
+		const ownSessionId = options.getOwnSessionId();
+		const ownIntercom = options.getOwnIntercomTarget();
+		const ownerSessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
+		const ownerIntercom = typeof result.intercomTarget === "string" ? result.intercomTarget.trim() : "";
+
+		// Primary: runtime session id match (present for every run, incl. intercom-disabled).
+		if (ownSessionId && ownerSessionId && ownSessionId === ownerSessionId) {
+			trigger();
+			return;
+		}
+		// Secondary: intercom target match (intercom-active runs; legacy result files).
+		if (ownIntercom && ownerIntercom && ownIntercom === ownerIntercom) {
+			trigger();
+			return;
+		}
+
+		// Known non-originator (owner signal present but does not match): send nothing.
+		if (ownerSessionId || ownerIntercom) {
+			return;
+		}
+
+		// No owner signal at all (legacy/edge result file). Apply unknownOwner policy.
+		if (unknownOwner === "trigger") {
+			trigger(); // legacy: treat unattributed completions as ours
+			return;
+		}
+		// unknownOwner === "drop" (default): do nothing.
 	};
 
 	globalStore[unsubscribeStoreKey] = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);

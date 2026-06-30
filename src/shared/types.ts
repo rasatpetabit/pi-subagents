@@ -841,6 +841,10 @@ export interface ExtensionConfig {
 	worktreeSetupHookTimeoutMs?: number;
 	intercomBridge?: IntercomBridgeConfig;
 	proactiveSkillSubagents?: ProactiveSkillSubagentsConfig | false;
+	/** Who receives an inline `triggerTurn` completion notify (WS-B). Default "originator". */
+	completionNotify?: "originator" | "all" | "off";
+	/** What to do when an async result lacks any usable owner signal (no sessionId AND no intercomTarget). Default "drop". */
+	unknownOwner?: "trigger" | "drop";
 }
 
 // ============================================================================

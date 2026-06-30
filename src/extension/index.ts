@@ -35,6 +35,7 @@ import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
+import { resolveIntercomSessionTarget } from "../intercom/intercom-bridge.ts";
 import { loadConfig } from "./config.ts";
 import {
 	type Details,
@@ -519,7 +520,19 @@ DIAGNOSTICS:
 			}
 		}
 	}
-	registerSubagentNotify(pi);
+	registerSubagentNotify(pi, {
+		getOwnSessionId: () => state.currentSessionId ?? undefined,
+		getOwnIntercomTarget: () => {
+			const sessionId = state.currentSessionId ?? undefined;
+			if (!sessionId) return undefined;
+			const name = pi.getSessionName();
+			return resolveIntercomSessionTarget(name, sessionId);
+		},
+		config: {
+			completionNotify: config.completionNotify ?? "originator",
+			unknownOwner: config.unknownOwner ?? "drop",
+		},
+	});
 
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
