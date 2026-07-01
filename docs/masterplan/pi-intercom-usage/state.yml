@@ -1,0 +1,46 @@
+---
+schema_version: 8
+slug: pi-intercom-usage
+status: complete
+phase: execute
+topic: "pi-intercom-usage"
+complexity: medium
+complexity_source: null
+autonomy: full
+planning_mode: auto
+created_at: 2026-06-26T07:30:00.000Z
+completed_at: 2026-06-26T07:45:00.000Z
+predecessor_transcript: null
+spec_path: /srv/dev/ai/pi-subagents-fork/docs/masterplan/pi-intercom-usage/spec.md
+plan_path: /srv/dev/ai/pi-subagents-fork/docs/masterplan/pi-intercom-usage/plan.md
+plan_index_path: /srv/dev/ai/pi-subagents-fork/docs/masterplan/pi-intercom-usage/plan.index.json
+tasks:
+  - id: 1
+    status: complete
+    wave: 0
+    files:
+      - src/intercom/result-intercom.ts
+      - src/runs/foreground/subagent-executor.ts
+      - src/runs/background/result-watcher.ts
+  - id: 2
+    status: complete
+    wave: 0
+    files:
+      - src/intercom/intercom-bridge.ts
+      - src/runs/foreground/subagent-executor.ts
+      - src/runs/background/subagent-runner.ts
+  - id: 3
+    status: complete
+    wave: 1
+    files:
+      - test/unit/intercom-bridge.test.ts
+  - id: 4
+    status: complete
+    wave: 1
+    files:
+      - test/unit/doctor.test.ts
+      - src/extension/doctor.ts
+active_run: null
+pending_gate: null
+review:
+  adversary: true

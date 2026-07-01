@@ -1,0 +1,26 @@
+Spec gate — cross-vendor adversarial review digest
+Artifact: docs/masterplan/enhancement-ideas/spec.md
+Lane: agent-dispatch adversary class → skynet gpt-5.5 review xhigh (cross-vendor vs Claude)
+Path: mcp__agent-dispatch__dispatch_review (CLI lane env-degraded: gateway MCP command unset)
+
+PASS 1 (standard): final_verdict = approve, 0 blocking. Findings (folded into spec v2):
+  H1  "single seam edit" likely insufficient — onModelResolved enrichment may need event/snapshot
+      propagation; model may resolve after agentStart.
+  H2  effort-from-tier under-proven/inconsistent — tier is a routing bucket, not compute effort.
+  H3  event-only adapter can diverge from workflow truth (missed/dup/out-of-order; cumulative tokens)
+      — prefer WorkflowAgentSnapshot as source of truth.
+  M   adapter lifecycle/idempotency/teardown underspecified.
+  M   AsyncJobState/AsyncJobStep may not fit workflow semantics 1:1.
+
+PASS 2 (rigorous, on revised spec): final_verdict = approve, 0 blocking. Findings (folded into v2.1):
+  H-new-1  snapshot source-of-truth needs an API to ENUMERATE active runIds/snapshots on attach
+           (use manager.listRuns()) or pre-existing runs stay invisible. Added attach-after-running test.
+  H-new-2  per-run cleanup must be distinct from manager-listener teardown — completing one run must
+           not detach listeners for concurrent runs. Added concurrent-run teardown test.
+  H-new-3  "re-read snapshot on event" requires emit-after-snapshot-mutation (verified for agentStart);
+           else coalesce refresh to next tick. Added emit-before-mutate convergence test.
+  M        seam must enrich the snapshot, not event-only. Tightened §3.2.
+
+Outcome: both passes APPROVE, 0 blocking findings. All High + Medium findings folded into spec v2.1.
+Receipt-provenance gap: dispatch_review (MCP) does not return output_tokens/dispatch_id required by the
+mp record-gate-review `done` receipt; CLI agent-dispatch review is env-degraded on this host.

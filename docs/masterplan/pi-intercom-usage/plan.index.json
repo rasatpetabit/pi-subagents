@@ -1,0 +1,1 @@
+{"version": 1, "slug": "pi-intercom-usage", "tasks": [{"id": 1, "wave": 0, "title": "Shared result delivery helper"}, {"id": 2, "wave": 0, "title": "Memoized target resolver"}, {"id": 3, "wave": 1, "title": "Bridge instruction template tests"}, {"id": 4, "wave": 1, "title": "Doctor integration verification"}]}

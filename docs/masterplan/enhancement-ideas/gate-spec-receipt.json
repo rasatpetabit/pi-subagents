@@ -1,0 +1,12 @@
+{
+  "gate": "spec",
+  "hash": "sha256:ecffc3dca98c7ff3612ac12de8f7023396702f04e861950a45f4d312c91b550b",
+  "artifacts": ["spec.md"],
+  "dispatch_id": "spec-gate-final",
+  "provider": "dispatch-gateway",
+  "model": "skynet gpt-5.5 review xhigh (adversary)",
+  "output_tokens": 5274,
+  "status": "done",
+  "ts": "2026-06-26T08:45:49Z",
+  "digest": "Cross-vendor adversary review (gpt-5.5 via skynet, route dispatch-adversary): final_verdict=approve, 0 blocking findings. All prior-pass High findings folded into spec v2.1 (H1 seam scope, H2 tier!=effort, H3 snapshot-as-source-of-truth, listRuns enumeration on attach, per-run vs manager-listener teardown, emit-after-snapshot-mutation). completion_tokens=5274, prompt_tokens=3424."
+}
