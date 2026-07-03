@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **ARCHIVED (2026-07-03).** This fork is retired. The maintained code lives in the unified package
+> `/srv/dev/ai/agent-dispatch/packages/pi-extension` (agent-dispatch repo), which `~/.pi/agent/settings.json`
+> now loads. Do not commit further changes here.
+
 <p>
   <img src="https://raw.githubusercontent.com/nicobailon/pi-subagents/main/banner.png" alt="pi-subagents" width="1100">
 </p>
@@ -1288,3 +1293,8 @@ The main runtime files are:
 | `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
+
+## Knowledge
+
+Structured project knowledge is cataloged in the `.okf/` directory.
+See [`.okf/index.md`](.okf/index.md) for the repo's knowledge index.
