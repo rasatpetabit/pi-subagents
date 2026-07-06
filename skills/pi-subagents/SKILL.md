@@ -14,6 +14,12 @@ This skill is for the main parent orchestrator only. Do not inject or follow it 
 
 Use this skill when the parent orchestrator needs to launch a specialized subagent, compose multiple agents into a workflow, or create/edit agents and chains on demand.
 
+Model literals in the examples below are placeholders (`provider/model-id`).
+On this host, concrete model choices are governed by the agent-dispatch hub
+(run `agent-dispatch digest` for the live routing policy); do not hard-pin
+frontier models in skills or configs. Per the hub's AUQ policy, user-facing
+questions go through `ask_user_question` — never prose questions at end of turn.
+
 ## When to Use
 
 - **Advisory review**: use fresh-context `reviewer` agents for adversarial code review, or fork to `oracle` when inherited decisions and drift matter
@@ -189,7 +195,7 @@ Builtin agents inherit the current Pi default model unless a run, user setting, 
 For one run, use inline config:
 
 ```text
-/run reviewer[model=anthropic/claude-sonnet-4] "Review this diff"
+/run reviewer[model=provider/model-id] "Review this diff"
 ```
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
@@ -222,9 +228,9 @@ Direct settings example:
   "subagents": {
     "agentOverrides": {
       "reviewer": {
-        "model": "anthropic/claude-sonnet-4",
+        "model": "provider/model-id",
         "thinking": "high",
-        "fallbackModels": ["openai/gpt-5-mini"]
+        "fallbackModels": ["provider/fallback-model-id"]
       }
     }
   }
@@ -302,7 +308,7 @@ subagent({
   tasks: [
     { agent: "scout", task: "Map auth", output: "auth-context.md", progress: true },
     { agent: "researcher", task: "Research OAuth best practices", output: "oauth-research.md" },
-    { agent: "reviewer", task: "Review auth tests", model: "anthropic/claude-sonnet-4" }
+    { agent: "reviewer", task: "Review auth tests", model: "provider/model-id" }
   ],
   concurrency: 3
 })
@@ -556,7 +562,7 @@ subagent({
     description: "Project-specific implementation helper",
     systemPrompt: "Your system prompt here.",
     systemPromptMode: "replace",
-    model: "openai-codex/gpt-5.4",
+    model: "provider/model-id",
     tools: "read,grep,find,ls,bash"
   }
 })
@@ -594,7 +600,7 @@ A minimal agent file looks like this:
 name: my-agent
 package: code-analysis
 description: What this agent does
-model: openai-codex/gpt-5.4
+model: provider/model-id
 thinking: high
 tools: read, grep, find, ls, bash
 systemPromptMode: replace
